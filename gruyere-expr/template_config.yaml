@@ -1,0 +1,14 @@
+---
+output: '/gpfs/commons/home/vmazeeva/gruyere-expr/tau_runs'
+Y: '/gpfs/commons/groups/knowles_lab/vmazeeva/ROSMAP_genes_tpm_EUR_renamed.tsv'
+X: '/gpfs/commons/groups/knowles_lab/vmazeeva/ROSMAP_DLPFC1_PEER_covariates.txt'
+G: '/gpfs/commons/groups/knowles_lab/vmazeeva/genotypes/'
+Z: '/gpfs/commons/groups/knowles_lab/vmazeeva/annotations/'
+samples: '/gpfs/commons/groups/knowles_lab/vmazeeva/EUR_samples.txt'
+epochs: 200
+test_prop: 0
+lr: 0.1
+gene_assoc: '/gpfs/commons/home/vmazeeva/gruyere-expr/gene_association'
+genes: '/gpfs/commons/home/vmazeeva/gruyere-expr/example/joint_analysis_genes.txt'
+num_genes: 50
+num_samples: 50

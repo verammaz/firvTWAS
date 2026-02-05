@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.png
+initial_work/
+*.out
+*.err
+*.log
+*/figures
+*/scripts/logs/
