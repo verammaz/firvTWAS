@@ -15,28 +15,17 @@ echo "Submitting chromosome merging jobs"
 echo "=========================================="
 echo ""
 
-# Submit jobs for each set
-for SET in "Train" "Test"; do
-    echo "Submitting jobs for set: ${SET}"
-    
-    # Submit SLURM job
-    JOB_ID=$(sbatch --export=SET="${SET}" \
-                    --job-name="merge_${SET}" \
-                    --output="logs/merge/merge_${SET}_chr%a.out" \
-                    --error="logs/merge/merge_${SET}_chr%a.err" \
-                    --time=6:00:00 \
-                    --mem=256G \
-                    --cpus-per-task=8 \
-                    --array=1-22 \
-                    "${MERGE_SCRIPT}" | grep -oP '\d+')
-    echo "  Job ID: ${JOB_ID}"
-    if [ -n "${JOB_ID}" ]; then
-        JOB_IDS+=("${JOB_ID}")
-    else
-        echo "Error: Failed to submit job for set: ${SET}"
-        exit 1
-    fi
-done
+# Submit SLURM job
+JOB_ID=$(sbatch --job-name="merge" \
+                --output="logs/merge/merge_chr%a.out" \
+                --error="logs/merge/merge_chr%a.err" \
+                --time=6:00:00 \
+                --mem=256G \
+                --cpus-per-task=8 \
+                --array=1-22 \
+                "${MERGE_SCRIPT}" | grep -oP '\d+')
+echo "  Job ID: ${JOB_ID}"
+
 
 
 echo "=========================================="

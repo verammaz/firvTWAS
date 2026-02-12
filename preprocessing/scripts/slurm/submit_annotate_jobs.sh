@@ -7,22 +7,17 @@ set -e
 SCRIPT_DIR="/gpfs/commons/home/vmazeeva/firvTWAS/preprocessing/scripts"
 ANNOTATE_SCRIPT="${SCRIPT_DIR}/annotate.sh"
 
-# Create logs directory
-mkdir -p logs
 
 echo "=========================================="
 echo "Submitting annotate jobs"
 echo "=========================================="
 
-for SET in "Train" "Test"; do
-    echo "Submitting job for set: ${SET}"
-    sbatch --export=SET="${SET}" \
-    --job-name="annotate_${SET}" \
-    --output="logs/annotate/annotate_${SET}.chr%a.out" \
-    --error="logs/annotate/annotate_${SET}.chr%a.err" \
-    --array=1-22 \
+JOB_ID=$(sbatch --job-name="annotate" \
+    --output="logs/annotate/annotate_chr%a.out" \
+    --error="logs/annotate/annotate_chr%a.err" \
+    --array=21 \
     --time=10:00:00 \
     --mem=100G \
     --cpus-per-task=8 \
-    ${ANNOTATE_SCRIPT}
-done
+    "${ANNOTATE_SCRIPT}" | grep -oP '\d+')
+echo "  Job ID: ${JOB_ID}"

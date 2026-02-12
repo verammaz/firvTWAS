@@ -1,37 +1,4 @@
-1. Create holdout set (ROSMAP DLPFC)
-```python
-import os
-import pandas as pd
-
-COVARIATE_FILE = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/All_combined_covariates.tsv"
-
-COVARIATE_FILE_TRAIN = os.path.join("/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/Train/covariates.tsv")
-COVARIATE_FILE_TEST = os.path.join("/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/Test/covariates.tsv")
-
-# Filter for ROSMAP DLPFC samples
-dlpfc = covariates[covariates['cohort_tissue'].str.contains('DLPFC')]
-dlpfc = dlpfc[dlpfc['cohort'] == 'ROSMAP']
-
-# Other samples
-other = covariates[~covariates['cohort_tissue'].str.contains('DLPFC')]
-
-# Get number of samples
-print(f"Number of ROSMAP DLPFC samples: {len(dlpfc)}")
-
-# Get number of participants
-print(f"Number of ROSMAP DLPFC participants: {dlpfc['participant_id'].nunique()}")
-
-print("Total number of samples: ", len(covariates))
-print("Total number of ROSMAP samples : ", len(covariates[covariates['cohort'] == 'ROSMAP']))
-print("Number of ROSMAP DLPFC samples: ", len(dlpfc))
-print(f"Number of other samples: {len(other)}")
-
-
-dlpfc.to_csv(COVARIATE_FILE_TEST, sep="\t", index=False)
-other.to_csv(COVARIATE_FILE_TRAIN, sep="\t", index=False)
-```
-
-2. Extract participant ids in common in covariates, genotype, and expression files
+1. Extract participant ids in common in covariates, genotype, and expression files
 
 ```bash
 python extract_common_participants.py
@@ -69,12 +36,9 @@ python rename_genotype_mapping.py # generates participant_id -> sample_id mappin
 6. Merge all cohorts per chromosome
 --> Per chromosome, single genotype file (.bed, .bim, .fam)
 ```bash
-./submit_merge_by_chromosome.sh
+./submit_merge_by_chromosome_jobs.sh
 ```
---> Train set -- remove true duplicates (high duplicate rate after merge due to inconsistent variant id naming)
-```bash
-./dedup_variants.sh
-```
+
 | Check A1 / A2 flips
 
 | Check distribution of variants (snps) per chromosome
@@ -105,4 +69,10 @@ python rename_genotype_mapping.py # generates participant_id -> sample_id mappin
 11. Add additional annotation columns
 ```bash
 python add_annotations.py
+```
+
+12. Train / Test Split
+Example: Create holdout set (ROSMAP DLPFC)
+```bash
+sbatch tr
 ```

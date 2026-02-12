@@ -3,7 +3,7 @@ import numpy as np
 import os
 from collections import defaultdict
 import sys
-
+from datetime import datetime
 import warnings
 from pandas.errors import DtypeWarning
 
@@ -37,18 +37,8 @@ try:
 except ValueError:
     sys.exit("Error: -chrom must be an integer between 1 and 22")
 
-# Get train or test set
-if '-set' in sys.argv:
-    SET = sys.argv[sys.argv.index('-set') + 1]
-else:
-    sys.exit("Error: Specify Train or Test set with -set Train or -set Test.")
-
-if SET not in ["Train", "Test"]:
-    sys.exit("Error: Invalid set. Must be Train or Test.")
-
-ANNOTATIONS_DIR = os.path.join(f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/{SET}", "annotations", f"chr{CHRO_NB}")
-GENOTYPE_PATH=f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/{SET}/chroms"
-
+ANNOTATIONS_DIR = os.path.join(f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed", "annotations", f"chr{CHRO_NB}")
+GENOTYPE_PATH=f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/chroms"
 
 noncoding_annotations = ['chr','pos','ref', 'alt', 'MAP20', 'phyloP17way_primate', 'phyloP30way_mammalian',
                          'phastCons30way_mammalian', 'phastCons17way_primate_rankscore',
@@ -108,22 +98,45 @@ def load_reference():
     return ref
 
 def load_gene_pos():
+    # Read and filter gene_pos by chromosome and biotype early
     gene_pos = pd.read_csv('/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/Alzheimer-RV/data/gene_positions38_ensemble.txt', sep = "\t")
-    gene_pos = gene_pos[gene_pos['chr']==str(CHRO_NB)]
-    genes = pd.read_csv("/gpfs/commons/groups/knowles_lab/vmazeeva/genes.bed", sep = "\t", header = None)
-    genes = genes[[0,1,2,3]]
+    gene_pos = gene_pos[(gene_pos['chr']==str(CHRO_NB)) & (gene_pos['biotype']=='protein_coding')]
+    
+    # Read genes.bed and filter by chromosome early, only selecting needed columns
+    genes = pd.read_csv("/gpfs/commons/groups/knowles_lab/vmazeeva/genes.bed", sep = "\t", header = None, usecols=[0,1,2,3])
     genes.columns = ['chr','start','end','ensgene']
     genes = genes[genes['chr']==f'chr{CHRO_NB}']
-    gene_pos['gencode'] = np.where(gene_pos['ensgene'].isin(list(genes['ensgene'])), 1, 0)
-    gene_pos = gene_pos[(gene_pos['gencode']==1)]    
-    gene_pos = gene_pos[(gene_pos['biotype']=='protein_coding')]
-    gene_pos = gene_pos.drop_duplicates("ensgene")
-    gene_pos = gene_pos.drop(['chr','start','end','entrez','gencode'], axis = 1).merge(genes, on = 'ensgene') # using gencode positions.
-    gene_pos['symbol'] = np.where(gene_pos['symbol'].isna(), gene_pos['ensgene'], gene_pos['symbol'])
+    
+    # Convert to set for O(1) lookup instead of O(n) list lookup
+    genes_ensgene_set = set(genes['ensgene'])
+    
+    # Filter gene_pos to only genes in the genes.bed file, then drop duplicates
+    gene_pos = gene_pos[gene_pos['ensgene'].isin(genes_ensgene_set)]
+    gene_pos = gene_pos.drop_duplicates("ensgene", keep='first')
+    
+    # Merge with genes to get gencode positions, dropping unnecessary columns
+    gene_pos = gene_pos.drop(['chr','start','end','entrez'], axis = 1, errors='ignore').merge(genes, on = 'ensgene')
+    
+    # Fill missing symbols with ensgene
+    gene_pos['symbol'] = gene_pos['symbol'].fillna(gene_pos['ensgene'])
+    
     return gene_pos
 
 
+def load_abc(CHRO_NB):
+    abc = pd.DataFrame()
+    for cell in ['microglia','neuron','oligodendrocyte','astrocyte']:
+        path_hg38new = f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/annotations/brain_all/glass_lab_fastq/processed_files/ABC_data/ABC_results_{cell}_v2/{cell}/Predictions/EnhancerPredictionsAllPutative.tsv.gz"
+        cell_df= pd.read_csv(path_hg38new, sep = "\t")
+        cell_df = cell_df[cell_df['ABC.Score']>=0.02]
+        cell_df = cell_df[cell_df['chr']==f'chr{CHRO_NB}']
+        cell_df['Cell'] = cell
+        abc = pd.concat((abc, cell_df))
+    return abc
+
+
 def map_genes(data, gene_pos):
+    # TODO: for very large genes --> remove gene
     print("Mapping variants to genes...")
     all_variants = np.array(data['pos'].astype(int))  
     print(f"\tTotal Variants: {len(all_variants)} ({len(set(all_variants))} unique)")
@@ -141,6 +154,7 @@ def map_genes(data, gene_pos):
 
 
 def get_wgsa(bim, ref_table=None):
+    print("Getting WGSA annotations...")
     print("# Coding annotations:", len(coding_annotations))
     print("# Noncoding annotations:",len(noncoding_annotations))
     columns_to_load = set(coding_annotations).union(set(noncoding_annotations))
@@ -257,7 +271,7 @@ def get_wgsa(bim, ref_table=None):
         print("--------------------------------")
         print(f"    ALT = A1: {alt_counts.get('A1', 0):,}")
         print(f"    ALT = A2: {alt_counts.get('A2', 0):,}\n")
-
+        print("--------------------------------\n")
         data = data.drop(columns=['id', 'cm', 'a1', 'a2', 'plink_a1_ref', 'plink_alt', 'ref_fasta'])
         data['chr'] = data['chr'].apply(de_norm_chr)
         
@@ -269,6 +283,7 @@ def get_wgsa(bim, ref_table=None):
 
 
 def add_lof_missense(data):
+    print("Adding LOF and Missense annotations...")
     path = f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/36K_QC/VEP_annotations/chr{CHRO_NB}_LOF.txt"
     lof = pd.read_csv(path, sep = "\t", skiprows=4).reset_index().drop_duplicates("level_1")
     path = f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/36K_QC/VEP_annotations/chr{CHRO_NB}_missense.txt"
@@ -276,7 +291,109 @@ def add_lof_missense(data):
     variants = np.array(data['pos'].astype(int))
     data['lof'] = np.where(pd.DataFrame(variants).isin(list(lof['level_1'].str.split(":").str[1].astype(int))), 1, 0)
     data['missense'] = np.where(pd.DataFrame(variants).isin(list(missense[1].str.split(":").str[1].astype(int))), 1, 0)
+    print(f'\tNumber of LOF variants:  {data["lof"].sum()} ({data["lof"].sum()/len(data):.2%})')
+    print(f'\tNumber of Missense variants:  {data["missense"].sum()} ({data["missense"].sum()/len(data):.2%})\n')
 
+    return data
+
+
+def add_chrombpnet(data):
+    print("Adding ChromBPNet annotations...")
+    for cell in ['microglia', 'astrocyte', 'neuron', 'oligodendrocyte']:
+        chrombp=pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/rare_variant_chrombpnet_{cell}_chr{CHRO_NB}_variant_peak_pairs_scored.csv", 
+                            sep = "\t", 
+                            usecols = ['Chr', 'BP', 'REF', 'ALT', 'log_counts_diff_chrombpnet'])
+        chrombp = chrombp.rename(columns={'Chr': 'chr', 'BP': 'pos', 'REF': 'ref', 'ALT': 'alt'})
+        chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
+        chrombp = chrombp.drop(columns=['chr'])
+        data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
+        n_variants = len(data) - pd.isna(data['log_counts_diff_chrombpnet']).sum()
+        print(f'\tCell type: {cell}')
+        print(f'\t\tNumber of ChromBPNet variants:  {n_variants} ({n_variants/len(data):.2%})')
+        data[f'log_counts_diff_chrombpnet_{cell}'] = np.where(data['log_counts_diff_chrombpnet'].isna(), 0, data['log_counts_diff_chrombpnet'])
+        data = data.drop(columns=['log_counts_diff_chrombpnet'])
+    print("\n")
+    return data
+
+def add_enformer(data):
+    print("Adding Enformer annotations...")
+    def scale(df):
+        df = np.arcsinh(df)
+        return (df-df.min())/ (df.max() - df.min())
+
+    for cell in ['microglia', 'astrocyte', 'neuron', 'oligodendrocyte']:
+        path = f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/Alzheimer-RV/data/gene_matrices_maf/ADSP_rare_variants_enformer_delta_scores_annotations_{cell}.tsv.gz"
+        newpath = f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/Alzheimer-RV/data/gene_matrices_maf/enformer_scored_06_03_2025/annotations_scaled/ADSP_rare_variants_06_03_2025_enformer_delta_scores_annotations_{cell}.tsv.gz"
+        if cell == 'neuron':
+            cell = 'neuronal'
+        enformer1 = pd.read_csv(path, 
+                            sep = "\t", 
+                            usecols = ['CHR','BP', 'A1', 'A2', f'{cell}_TF_delta_max', f'{cell}_TF_delta_min'])
+        enformer1 = enformer1.rename(columns={'CHR': 'chr', 'BP': 'pos', 'A1': 'alt', 'A2': 'ref'}) # assume ref=A2, alt=A1
+
+        enformer2 = pd.read_csv(newpath,
+                            sep = "\t", 
+                            usecols = ['CHR','POS', 'REF', 'ALT', f'{cell}_TF_delta_max', f'{cell}_TF_delta_min'])
+        enformer2 = enformer2.rename(columns={'CHR': 'chr', 'POS': 'pos', 'REF': 'ref', 'ALT': 'alt'})
+        
+        enformer = pd.concat([enformer1, enformer2])
+        enformer[enformer['chr']==int(CHRO_NB)]
+        enformer['pos'] = enformer['pos'].astype(int)
+        enformer = enformer.drop(columns=['chr'])
+        enformer[f'{cell}_TF_delta_max'] = scale(abs(enformer[f'{cell}_TF_delta_max']))
+        enformer[f'{cell}_TF_delta_min'] = scale(abs(enformer[f'{cell}_TF_delta_min']))
+        data = data.merge(enformer, on=['pos', 'ref', 'alt'], how='left')
+        n_variants = len(data) - pd.isna(data[f'{cell}_TF_delta_max']).sum()
+        print(f'\tCell type: {cell}')
+        print(f'\t\tNumber of Enformer variants:  {n_variants} ({n_variants/len(data):.2%})')
+        data[f'{cell}_TF_delta_max'] = np.where(data[f'{cell}_TF_delta_max'].isna(), 0, data[f'{cell}_TF_delta_max'])
+        data[f'{cell}_TF_delta_min'] = np.where(data[f'{cell}_TF_delta_min'].isna(), 0, data[f'{cell}_TF_delta_min'])
+    print("\n")
+    return data
+
+def add_alphamissense(data):
+    print("Adding AlphaMissense annotations...")
+    path = '/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/annotations_hg38/merged_annotations_ADSP_v2/alphamissense/AlphaMissense_hg38.tsv.gz'
+    alphamissense = pd.read_csv(path, sep = "\t", skiprows=3, usecols = ['#CHROM', 'POS', 'REF', 'ALT', 'protein_variant'])
+    alphamissense = alphamissense.rename(columns={'#CHROM': 'chr', 'POS': 'pos', 'REF': 'ref', 'ALT': 'alt'})
+    
+    # Normalize chromosome: remove 'chr' prefix and convert to string for comparison
+    alphamissense['chr'] = alphamissense['chr'].apply(de_norm_chr)
+    # Filter by chromosome - compare as strings (de_norm_chr returns string)
+    alphamissense = alphamissense[alphamissense['chr'] == str(CHRO_NB)]
+    alphamissense = alphamissense.drop(columns=['chr'])
+    data = data.merge(alphamissense, on=['pos', 'ref', 'alt'], how='left')
+    n_variants = len(data) - pd.isna(data['protein_variant']).sum()
+    print(f'\tNumber of AlphaMissense variants:  {n_variants} ({n_variants/len(data):.2%})\n')
+    data['alphamissense'] = np.where(data['protein_variant'].isna(), 0, 1)
+    # drop protein_variant column (non-numeric)
+    data = data.drop(columns=['protein_variant'])
+    return data
+
+def add_abc(data, abc, gene):
+    print(f"\t{gene}: Adding ABC annotations...")
+    variants = np.array(data['pos'].astype(int))
+    for cell in abc['Cell'].unique():
+        abc_cell = abc[abc['Cell']==cell]
+        rows = abc_cell[abc_cell['TargetGeneEnsembl_ID'] == gene]
+        if len(rows) == 0:
+            print(f'\t\t{gene}: not in ABC data for cell {cell}')
+            data[f'ABC_{cell}'] = 0
+        else:
+            # Initialize ABC column to 0
+            data[f'ABC_{cell}'] = 0
+            unique_variants = set()
+            for index, row in rows.iterrows():
+                start, end = int(row['start']), int(row['end'])
+                # Find variants within this region
+                mask = (variants >= start) & (variants <= end)
+                annot = variants[mask]
+                unique_variants.update(annot)
+                # Update ABC score, taking maximum if variant is in multiple regions
+                data.loc[mask, f'ABC_{cell}'] = np.maximum(data.loc[mask, f'ABC_{cell}'], row['ABC.Score'])
+            n_variants = len(unique_variants)
+            print(f'\t\t{gene}: {cell} -- Number of ABC variants:  {n_variants} ({n_variants/len(data):.2%})')
+    print("\n")
     return data
 
 
@@ -287,6 +404,16 @@ def annotate(gene_pos, bim, ref_table=None):
 
     # Add LOF + Missense annotations
     data = add_lof_missense(wgsa)
+
+    # Add Enformer annotations
+    data = add_enformer(data)
+
+    # Add ChromBPNet annotations
+    data = add_chrombpnet(data)
+
+    # Add AlphaMissense annotations
+    data = add_alphamissense(data)
+
     
     # Map variants to genes
     variant_genes, gene_variants = map_genes(data, gene_pos)
@@ -312,6 +439,9 @@ def annotate(gene_pos, bim, ref_table=None):
 
     total_genes, genes_with_mapped_variants = 0, 0
 
+    # Load ABC annotations
+    abc = load_abc(CHRO_NB)
+
     for gene, variants in gene_variants.items():
         total_genes += 1
 
@@ -319,9 +449,9 @@ def annotate(gene_pos, bim, ref_table=None):
             continue
 
         genes_with_mapped_variants += 1
-        print(f"Getting {gene} variants...")
-        print(f"\t ... {len(variants)} total variants ({len(set(variants))} unique)")
+        print(f"Getting {gene} variants...{len(variants)} total variants ({len(set(variants))} unique)")
         gene_data = data[data['pos'].isin(variants)]
+        # print(f"{gene}: found {len(gene_data)} annotation rows for these positions")
         anno = gene_data.replace(".", 0)
         
         anno[['SpliceAI_DS_AG',	'SpliceAI_DS_AL','SpliceAI_DS_DG', 'SpliceAI_DS_DL']] = anno[['SpliceAI_DS_AG',	'SpliceAI_DS_AL','SpliceAI_DS_DG', 'SpliceAI_DS_DL']].astype(str).applymap(lambda x: max(map(float, x.split(';'))))
@@ -329,21 +459,31 @@ def annotate(gene_pos, bim, ref_table=None):
 
         gnomad_cols = ['gnomAD_genomes_POPMAX_AF', 'gnomAD_genomes_AFR_AF', 'gnomAD_genomes_AMR_AF', 'gnomAD_genomes_NFE_AF']
         anno[gnomad_cols] = anno[gnomad_cols].replace(".", np.NaN)
-        
         anno[gnomad_cols] = anno[gnomad_cols].apply(lambda col: (col.astype(float).fillna(col.astype(float).min() / 2))) # if very rare, large weight.
+        
         anno['EnhancerFinder_brain_enhancer'] = np.where(anno['EnhancerFinder_brain_enhancer']=="Y", 1, 0)
         anno['FANTOM5_CAGE_peak_robust'] = np.where(anno['FANTOM5_CAGE_peak_robust']=="Y", 1, 0)
 
-
         # there are some duplicates in wgsa with different splicing scores. keeping highest. TODO: is there a better way to drop duplicates?
         anno = anno.sort_values('splice', ascending=False).drop_duplicates('pos', keep='first').sort_values("pos")
+        # print(f"{gene}: after deduplication by position (max splice): {len(anno)} variants")
         anno = anno.drop(columns=['SpliceAI_DS_AG', 'SpliceAI_DS_AL', 'SpliceAI_DS_DG', 'SpliceAI_DS_DL'] , axis = 1) 
+
+        # Add ABC annotations
+        anno = add_abc(anno, abc, gene)
+
+        # add index (variant id --> chr:pos_ref_alt)
+        # Ensure chr and pos are still columns (not index) before creating variant_id
+        if anno.index.name is not None and anno.index.name in ['chr', 'pos']:
+            anno = anno.reset_index()
+        anno['variant_id'] = anno['chr'].astype(str) + ':' + anno['pos'].astype(str) + '_' + anno['ref'] + '_' + anno['alt']
+        anno.set_index('variant_id', inplace=True)
+        # Ensure index name is set (pandas sometimes doesn't preserve it)
+        anno.index.name = 'variant_id'
 
         # remove non-numeric columns
         anno = anno.drop('ref', axis = 1)
         anno = anno.drop('alt', axis = 1)
-        
-
         for column in anno.columns:
             try:
                 anno[column] = anno[column].astype(float)
@@ -376,27 +516,23 @@ def annotate(gene_pos, bim, ref_table=None):
         anno['dist_to_TSS'] = np.log10(np.abs(anno['dist_to_TSS']) + 1e-10)
 
         if len(anno) != 0: # dont save empty df
-            anno.to_csv(os.path.join(ANNOTATIONS_DIR, f"{gene}_annotations.tsv.gz"), sep="\t", index=False, compression="gzip")
+            anno.to_csv(os.path.join(ANNOTATIONS_DIR, f"{gene}_annotations.tsv.gz"), sep="\t", index=True, compression="gzip")
 
-    print("\n")
     print(f"Total genes: {total_genes}")
-    print(f"Genes with mapped variants: {genes_with_mapped_variants}")
+    print(f"Genes with mapped variants: {genes_with_mapped_variants}\n")
     
     return 
 
 
 def main():
+    start_time = datetime.now()
+    print(f"Start time: {start_time}")
     os.makedirs(ANNOTATIONS_DIR, exist_ok=True)
     gene_pos = load_gene_pos()
     print(f"Chromosome {CHRO_NB} \n")
     
-    if SET == "Train":
-        bim = pd.read_csv(os.path.join(GENOTYPE_PATH, f'clean_chr{CHRO_NB}.bim'), delim_whitespace = True, header = None)
-    elif SET == "Test":
-        bim = pd.read_csv(os.path.join(GENOTYPE_PATH, f'merged_chr{CHRO_NB}.bim'), delim_whitespace = True, header = None)
-    else:
-        sys.exit("Error: Invalid set. Must be Train or Test.")
-
+    bim = pd.read_csv(os.path.join(GENOTYPE_PATH, f'merged_chr{CHRO_NB}.bim'), delim_whitespace = True, header = None)
+   
     if REMOVE_DUPS:
         print("Removing duplicate position variants from BIM...")
         total_variants = len(bim)
@@ -419,6 +555,10 @@ def main():
         
     print("Annotating variants...\n\n")
     annotate(gene_pos, bim, ref_table)
+    
+    end_time = datetime.now()
+    print(f"End time: {end_time}")
+    print(f"Total time: {end_time - start_time}")
     
     return
     

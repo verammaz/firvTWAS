@@ -1,11 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=update_ids_${COHORT}
-#SBATCH --output=logs/id/update_genotype_ids_${COHORT}_chr%a.out
-#SBATCH --error=logs/id/update_genotype_ids_${COHORT}_chr%a.err
-#SBATCH --time=10:00:00
-#SBATCH --mem=200G
-#SBATCH --cpus-per-task=4
-#SBATCH --array=1-22
+
+# Usage: sbatch update_genotype_ids_cohort.sh <cohort>
 
 set -euo pipefail
 
@@ -25,7 +20,7 @@ GENO_DIR="${BASE_DIR}/Genotypes"
 SUBSET_DIR="${GENO_DIR}/subsetted"
 REMAP_DIR="${GENO_DIR}/remapping"
 FINAL_DIR="${GENO_DIR}/final"
-mkdir -p "${FINAL_DIR}" logs
+mkdir -p "${FINAL_DIR}" 
 
 CHR=${SLURM_ARRAY_TASK_ID}
 INPUT_BASE="${SUBSET_DIR}/${COHORT}_subset_chr${CHR}"
@@ -52,34 +47,13 @@ TEMP_DIR=$(mktemp -d -t genotype_update_${COHORT}_chr${CHR}_XXXXXX)
 PER_SAMPLE_DIR="${TEMP_DIR}/per_sample"
 mkdir -p "${PER_SAMPLE_DIR}"
 
-# Initialize multiallelic variant count
-MULTIALLELIC_COUNT=0
-
-# -------------------------
-# Step 0: filter mapping per chromosome
-# -------------------------
-echo "Filtering mapping file to samples present in chr${CHR} .fam..."
-# Extract IID column (field 2 in .fam file)
-# Use awk to handle both space and tab delimiters automatically
-awk "{print \$2}" "${INPUT_BASE}.fam" | sort > "${TEMP_DIR}/fam.iids"
-
-# Match mapping file based on IID (field 1 in mapping file: OLD_IID NEW_IID)
-# awk handles both tab and space delimiters automatically
-awk "NR==FNR { fam[\$1]=1; next } \$1 in fam" "${TEMP_DIR}/fam.iids" "${MAPPING_FILE}" > "${TEMP_DIR}/mapping.filtered.txt"
-
-MAPPING_FILE="${TEMP_DIR}/mapping.filtered.txt"
-N_SAMPLES=$(wc -l < "${MAPPING_FILE}")
-echo "  Samples in chr fam: $(wc -l < "${TEMP_DIR}/fam.iids")"
-echo "  Samples after filter: ${N_SAMPLES}"
-if [ "${N_SAMPLES}" -eq 0 ]; then
-    echo "ERROR: No samples left after filtering"
-    exit 1
-fi
 
 # -------------------------
 # Step 1: per-sample extraction (two-step)
 # -------------------------
-echo "Creating per-sample genotype files..."
+N_SAMPLES=$(wc -l < "${MAPPING_FILE}")
+echo "Creating per-sample genotype files (n=${N_SAMPLES})..."
+
 
 i=0
 while read -r OLD_IID NEW_IID; do
@@ -143,6 +117,7 @@ tail -n +2 "${TEMP_DIR}/merge_list.txt" > "${TEMP_DIR}/merge_list_tail.txt"
 
 # Attempt merge using PLINK 1.9 --merge-list
 # If merge fails due to multiallelic variants, we will remove them and retry
+MULTIALLELIC_COUNT=0
 MULTIALLELIC_REMOVED=0
 MERGE_ATTEMPT=1
 MAX_MERGE_ATTEMPTS=2
@@ -284,7 +259,7 @@ echo "=========================================="
 
 # Original sample count
 ORIG_N=$(wc -l < "${INPUT_BASE}.fam")
-echo "  Original number of samples      : ${ORIG_N}"
+echo "  Original number of samples (participants)      : ${ORIG_N}"
 
 # Total number of participants in original .fam (awk handles both tab and space delimiters)
 TOTAL_PARTICIPANTS=$(awk "{print \$2}" "${INPUT_BASE}.fam" | sort | uniq | wc -l)
@@ -292,7 +267,7 @@ echo "  Total participants              : ${TOTAL_PARTICIPANTS}"
 
 # Number of samples after filtering / duplication
 NEW_N=$(wc -l < "${MAPPING_FILE}")
-echo "  Number of samples after duplication: ${NEW_N}"
+echo "  New number of samples (samples): ${NEW_N}"
 
 # Participants with multiple samples (awk handles both tab and space delimiters)
 TEMP_FILE="${TEMP_DIR}/multi_parts_counts.txt"

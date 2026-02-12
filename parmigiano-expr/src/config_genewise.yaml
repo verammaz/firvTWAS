@@ -1,0 +1,21 @@
+# Parmigiano Configuration File (Gene-by-gene format)
+
+# Phenotype data
+expression_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv'
+covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/covariates.tsv'
+diagnosis_col: Diagnosis
+sample_col: SampleID
+
+# Genotype and annotation data (Option 2: Individual gene files)
+genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/'
+gene_list: 'gene_list1.txt'
+
+# Model parameters
+beta: 25  # Beta parameter for MAF weights
+lr: 0.1   # Learning rate
+epochs: 500  # Number of training epochs
+n_posterior: 50  # Number of posterior samples
+
+# Output
+output_dir: test_results/

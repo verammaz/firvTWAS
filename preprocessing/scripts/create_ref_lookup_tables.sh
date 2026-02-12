@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=build_ref_chr
-#SBATCH --output=logs/build_ref_chr%a.out
-#SBATCH --error=logs/build_ref_chr%a.err
-#SBATCH --time=10:00:00
+#SBATCH --output=slurm/logs/ref/build_ref_chr%a.out
+#SBATCH --error=slurm/logs/ref/build_ref_chr%a.err
+#SBATCH --time=3:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=50G
 #SBATCH --array=1-22
@@ -25,13 +25,11 @@ OUT_DIR=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/reference
 
 mkdir -p "${OUT_DIR}"
 
-BIM_TRAIN=${BIM_DIR}/Train/chroms/clean_chr${CHR}.bim
-BIM_TEST=${BIM_DIR}/Test/chroms/merged_chr${CHR}.bim
+BIM=${BIM_DIR}/chroms/merged_chr${CHR}.bim
 OUT=${OUT_DIR}/chr${CHR}_ref.tsv.gz
 
 echo "Chromosome ${CHR}"
-echo "BIM Train: ${BIM_TRAIN}"
-echo "BIM Test: ${BIM_TEST}"
+echo "BIM: ${BIM}"
 echo "FASTA: ${REF_FASTA}"
 echo "Output: ${OUT}"
 echo "Started: $(date)"
@@ -50,7 +48,7 @@ fi
 TMP_POS=$(mktemp)
 TMP_REGIONS=$(mktemp)
 
-cat "${BIM_TRAIN}" "${BIM_TEST}" \
+cat "${BIM}" \
 | awk '{
     c=$1
     sub(/^chr/,"",c)
@@ -58,7 +56,7 @@ cat "${BIM_TRAIN}" "${BIM_TEST}" \
 }' \
 | sort -u > "${TMP_POS}"
 
-echo "Unique positions (Train + Test): $(wc -l < "${TMP_POS}")"
+echo "Unique positions: $(wc -l < "${TMP_POS}")"
 
 
 # -----------------------

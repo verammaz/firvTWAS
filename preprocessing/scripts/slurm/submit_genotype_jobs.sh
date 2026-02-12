@@ -11,19 +11,15 @@ GENOTYPE_SCRIPT="${SCRIPT_DIR}/genotype.sh"
 mkdir -p logs
 
 echo "=========================================="
-echo "Submitting annotate jobs"
+echo "Submitting genotype jobs"
 echo "=========================================="
 
-for SET in "Train" "Test"; do
-    
-    echo "Submitting job for set: ${SET}"
-    sbatch --export=SET="${SET}" \
-    --job-name="genotype__mat_${SET}" \
-    --output="logs/genotype/genotype_mat_${SET}.chr%a.out" \
-    --error="logs/genotype/genotype_mat_${SET}.chr%a.err" \
-    --array=1-22 \
-    --time=8:00:00 \
+JOB_ID=$(sbatch --job-name="genotype" \
+    --output="logs/genotype/genotype_chr%a.out" \
+    --error="logs/genotype/genotype_chr%a.err" \
+    --array=21\
+    --time=30:00:00 \
     --mem=100G \
     --cpus-per-task=8 \
-    ${GENOTYPE_SCRIPT}
-done
+    "${GENOTYPE_SCRIPT}" | grep -oP '\d+')
+echo "  Job ID: ${JOB_ID}"

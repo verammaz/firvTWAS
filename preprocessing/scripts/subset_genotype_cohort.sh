@@ -1,10 +1,4 @@
 #!/bin/bash
-#SBATCH --job-name=subset_geno_${COHORT}
-#SBATCH --output=logs/subset/subset_genotype_${COHORT}.out
-#SBATCH --error=logs/subset/subset_genotype_${COHORT}.err
-#SBATCH --time=4:00:00
-#SBATCH --mem=16G
-#SBATCH --cpus-per-task=4
 
 # Subset genotype files for a specific cohort using PLINK
 # Usage: sbatch --export=COHORT=<cohort_name> subset_genotype_cohort.sh
@@ -30,7 +24,6 @@ FILE_SHEET="/gpfs/commons/home/vmazeeva/BigBrain_files_sheet.tsv"
 
 # Create output directory
 mkdir -p "${OUTPUT_DIR}"
-mkdir -p logs
 
 echo "=========================================="
 echo "Subsetting genotype for cohort: ${COHORT}"
@@ -73,8 +66,6 @@ if [ "${COHORT}" == "NYGC" ]; then
     SHEET_COHORT="NYGC ALS"
 elif [ "${COHORT}" == "Mayo" ]; then
     SHEET_COHORT="Mayo Clinic"
-elif [ "${COHORT}" == "ROSMAP_DLPFC" ]; then
-    SHEET_COHORT="ROSMAP"
 else
     SHEET_COHORT="${COHORT}"
 fi
@@ -183,6 +174,10 @@ echo ""
 # Subset genotype file using PLINK
 echo "Subsetting genotype file..."
 echo ""
+
+
+# TODO: remove individuals with a lot of missingness? --> at least check/report
+# plink --mind 0.1
 
 # Step 1: Subset samples first (to count variants in subsetted data)
 echo "Step 1: Subsetting samples..."

@@ -19,9 +19,8 @@ BASE_DIR = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain"
 GENOTYPE_DIR = os.path.join(BASE_DIR, "Genotypes")
 GENOTYPE_SUBSETTED_DIR = os.path.join(GENOTYPE_DIR, "subsetted")
 REMAPPING_DIR = os.path.join(GENOTYPE_DIR, "remapping")
-COVARIATE_FILE_TRAIN = os.path.join(BASE_DIR, "Processed", "Train", "covariates.tsv")
-COVARIATE_FILE_TEST = os.path.join(BASE_DIR, "Processed", "Test", "covariates.tsv")
-COHORTS = ["NYGC", "ROSMAP", "MSBB", "Mayo", "GTEX", "AnswerALS", "ROSMAP_DLPFC"] # ROSMAP_DLPFC is the only test cohort
+COVARIATE_FILE = os.path.join(BASE_DIR, "Processed", "covariates.tsv")
+COHORTS = ["NYGC", "ROSMAP", "MSBB", "Mayo", "GTEX", "AnswerALS"]
 
 
 def get_genotype_participant_ids(base_path, chrom):
@@ -38,7 +37,7 @@ def get_participant_to_samples_map(cohort, covariates):
     """Get mapping of participant_id -> list of sample_ids for a cohort."""
     cohort_cov = covariates[covariates['cohort'] == cohort].copy()
     if len(cohort_cov) == 0:
-        print(f"ERROR: Cohort {cohort} not found in train covariates")
+        print(f"ERROR: Cohort {cohort} not found in covariates")
         sys.exit(1)
     
     # Create mapping: participant_id -> list of sample_ids
@@ -116,15 +115,13 @@ def generate_id_mapping(cohort, input_base, participant_to_samples):
     print(f"  Participants with multiple samples: {participants_with_multiple}")
     print("")
     
-    return mapping_file
+    return 
 
 def main():
     # Load covariates
     print("Loading covariates files...")
-    covariates_train = pd.read_csv(COVARIATE_FILE_TRAIN, sep="\t")
-    covariates_test = pd.read_csv(COVARIATE_FILE_TEST, sep="\t")
-    print(f"  Train: {len(covariates_train)} samples")
-    print(f"  Test: {len(covariates_test)} samples")
+    covariates = pd.read_csv(COVARIATE_FILE, sep="\t")
+    print(f"  {len(covariates)} samples, {covariates['participant_id'].nunique():,} participants")
     print("")
 
     for cohort in COHORTS:
@@ -134,16 +131,9 @@ def main():
         print("=" * 80)
         print("")
         
-        if cohort == "ROSMAP_DLPFC":
-            cohort_name = "ROSMAP"
-            covariates = covariates_test
-        else:
-            cohort_name = cohort
-            covariates = covariates_train
-        
         # Get participant to samples mapping
         print("Creating participant -> samples mapping from covariates...")
-        participant_to_samples = get_participant_to_samples_map(cohort_name, covariates)
+        participant_to_samples = get_participant_to_samples_map(cohort, covariates)
         print(f"  Found {len(participant_to_samples)} participants in covariates")
         
         # Count samples
@@ -156,9 +146,8 @@ def main():
         # Find input genotype file
         input_base = os.path.join(GENOTYPE_SUBSETTED_DIR, f"{cohort}_subset")
         
-        
         # Generate mapping file
-        mapping_file = generate_id_mapping(cohort, input_base, participant_to_samples)
+        generate_id_mapping(cohort, input_base, participant_to_samples)
         
     
        

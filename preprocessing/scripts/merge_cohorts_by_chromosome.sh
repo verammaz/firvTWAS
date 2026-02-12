@@ -1,35 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=merge_${SET}
-#SBATCH --output=logs/merge/merge_${SET}_chr%a.out
-#SBATCH --error=logs/merge/merge_${SET}_chr%a.err
-#SBATCH --time=6:00:00
-#SBATCH --mem=256G
-#SBATCH --cpus-per-task=8
-#SBATCH --array=1-22
+
 
 # Merge all cohorts for a specific chromosome
-# Usage: sbatch --export=SET=<set> merge_cohorts_by_chromosome.sh
+# Usage: sbatch merge_cohorts_by_chromosome.sh
 
 set -euo pipefail  # Exit on error, treat unset vars as error, pipefail for proper exit codes in pipelines
 ncores=8
 
-# Check if SET is set
-if [ -z "$SET" ]; then
-    echo "ERROR: SET environment variable not set"
-    echo "Usage: sbatch --export=SET=<set> merge_cohorts_by_chromosome.sh"
-    exit 1
-fi
 
-# Define cohorts for set
-if [ "$SET" == "Train" ]; then
-    COHORTS=("AnswerALS" "Mayo" "MSBB" "NYGC" "ROSMAP" "GTEX")
-elif [ "$SET" == "Test" ]; then
-    COHORTS=("ROSMAP_DLPFC")
-else
-    echo "ERROR: Invalid set: ${SET}"
-    echo "Specify train or test."
-    exit 1
-fi
+# Define cohorts 
+COHORTS=("AnswerALS" "Mayo" "MSBB" "NYGC" "ROSMAP" "GTEX")
 
 # Ensure PATH includes standard 
 export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
@@ -37,14 +17,14 @@ export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
 # Hardcoded paths
 CHR=${SLURM_ARRAY_TASK_ID}
 CHROM_DIR="/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Genotypes/final"
-FINAL_DIR="/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/${SET}/chroms"
+FINAL_DIR="/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/chroms"
 
 # Create directories
 mkdir -p "${FINAL_DIR}"
 mkdir -p logs
 
 echo "=========================================="
-echo "Merging cohorts for set ${SET} and chromosome ${CHR}"
+echo "Merging cohorts for chromosome ${CHR}"
 echo "Cohorts: ${COHORTS[@]}"
 echo "=========================================="
 echo "Date: $(date)"
@@ -219,6 +199,7 @@ else
                             if ! plink \
                               --bfile "${cohort_path}" \
                               --exclude "${MISSNP_FILE}" \
+                              --keep-allele-order \
                               --allow-no-sex \
                               --threads ${ncores} \
                               --make-bed \

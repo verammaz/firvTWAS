@@ -2,8 +2,8 @@
 # Check which annotation jobs completed successfully
 # Success is determined by having the expected last two lines in .out files
 
-LOG_DIR="logs/annotate"
-OUT_PATTERN="annotate_T*.out"
+LOG_DIR="slurm/logs/annotate"
+OUT_PATTERN="annotate*.out"
 
 echo "Checking annotation job completion status..."
 echo "=========================================="
@@ -27,8 +27,8 @@ FAILED=()
 MISSING_OUT=()
 
 # Expected last two lines
-EXPECTED_LINE1="Total genes:"
-EXPECTED_LINE2="Genes with mapped variants:"
+EXPECTED_LINE1="End time:"
+EXPECTED_LINE2="Total time:"
 
 for out_file in ${OUT_FILES}; do
     # Extract job identifier (e.g., annotate_Train.12835478_3.out -> Train.12835478_3)

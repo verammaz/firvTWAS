@@ -37,6 +37,7 @@ echo ""
 # Submit jobs for each cohort
 JOB_IDS=()
 for cohort in "${COHORTS[@]}"; do
+  
     echo "Submitting job for cohort: ${cohort}"
     
     # Submit SLURM job

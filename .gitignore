@@ -5,5 +5,5 @@ initial_work/
 *.out
 *.err
 *.log
-*/figures
-*/scripts/logs/
+*/figures*/
+*/scripts/slurm/logs*/
