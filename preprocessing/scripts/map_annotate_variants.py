@@ -220,25 +220,30 @@ def get_wgsa(bim, ref_table=None):
             how="inner",
             suffixes=("", "_fasta")
         )
-
         # Require WGSA ref == FASTA ref
         before = len(data)
         data = data[data["ref"] == data["ref_fasta"]]
-        print(f"  Dropped {before - len(data)} WGSA variants with ref mismatch")
+        print(f"  Dropped {before - len(data):,} WGSA variants with ref mismatch")
 
         # Merge with BIM
+        before_bim_merge = len(data)
         data = data.merge(
             bim,
             on=["chr", "pos"],
             how="inner"
         )
+        after_bim_merge = len(data)
+        print(f"  After merging with BIM: {after_bim_merge:,} variants (dropped {before_bim_merge - after_bim_merge:,} not in BIM)")
 
         # Keep only variants where FASTA ref is in PLINK alleles
+        before_allele_filter = len(data)
         allele_ok = (
             (data["ref_fasta"] == data["a1"]) |
             (data["ref_fasta"] == data["a2"])
         )
         data = data[allele_ok]
+        after_allele_filter = len(data)
+        print(f"  After filtering for ref in PLINK alleles: {after_allele_filter:,} variants (dropped {before_allele_filter - after_allele_filter:,} where ref not in PLINK)")
 
         # Determine which PLINK allele is ALT
         def which_alt(row):
@@ -250,7 +255,10 @@ def get_wgsa(bim, ref_table=None):
                 return np.nan
 
         data["plink_alt"] = data.apply(which_alt, axis=1)
+        before_alt_filter = len(data)
         data = data.dropna(subset=["plink_alt"])
+        after_alt_filter = len(data)
+        print(f"  After filtering for alt in PLINK alleles: {after_alt_filter:,} variants (dropped {before_alt_filter - after_alt_filter:,} where alt not in PLINK)")
 
         # Flag whether PLINK encoding is flipped
         data["plink_a1_ref"] = data["ref_fasta"] == data["a1"]
