@@ -200,7 +200,7 @@ scripts=/gpfs/commons/home/vmazeeva/firvTWAS/preprocessing/scripts
 export NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
 echo "Using ${NUM_THREADS} threads for Python genotype processing"
 
-if python "${scripts}/process_genotype.py" "${CHRO_NB}" "${scratch_dir}" "${output_dir}"; then
+if python -u "${scripts}/process_genotype.py" "${CHRO_NB}" "${scratch_dir}" "${output_dir}"; then
     echo
     echo "$(date '+%Y-%m-%d %H:%M:%S')  Finished genotype processing..."
     echo "Cleaning up scratch directory: ${scratch_dir}"

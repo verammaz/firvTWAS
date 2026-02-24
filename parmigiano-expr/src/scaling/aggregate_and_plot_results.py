@@ -176,7 +176,7 @@ def print_summary_table(df):
 
 def main():
     parser = argparse.ArgumentParser(description="Aggregate and plot scaling experiment results")
-    parser.add_argument('--results_dir', type=str, default='scaling_experiments',
+    parser.add_argument('--results_dir', type=str, default='experiments',
                        help='Directory containing experiment results')
     parser.add_argument('--output_dir', type=str, default=None,
                        help='Directory to save plots (default: same as results_dir)')

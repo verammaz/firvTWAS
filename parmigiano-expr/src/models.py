@@ -24,16 +24,28 @@ class parmigiano_expression(PyroModule):
             G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name) # Index gene-specific data
             num_indivs = G_gene.shape[0]
             lambda_ = F.relu((Z_gene.matmul(tau)) - threshold) # Compute functional weights
+            # Compute mu_gj = rho_g * w_g * lambda_gj
+            mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_
+            pyro.deterministic(f"mu_{gene_name}", mu)
             lambda_ = lambda_ * maf_weights_gene * w_g[gene_idx]
             Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device) # Sample variance 
+            # save beta 
             beta = rho_g[gene_idx] * lambda_ + (1 - rho_g[gene_idx]) * lambda_ * Z_norm # variant effect beta
+            pyro.deterministic(f"beta_{gene_name}", beta)
             Gbeta = G_gene.matmul(beta) 
             mean = (Gbeta.reshape(-1, 1)).view(num_indivs) # Predict phenotype: Gbeta
             if torch.isnan(mean).any():
-                print(f"NaNs in mean at gene {gene_name}")
+                import utils
+                logger = utils.get_logger()
+                logger.warning(f"NaNs in mean at gene {gene_name}")
                 return "FAIL"
             with pyro.plate(f'data_{gene_name}', num_indivs): # Likelihood
-                obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, 1), obs=data.Y[gene_name.split("/")[1]])        
+                # Extract gene key for Y dictionary
+                if "/" in gene_name:
+                    gene_key = gene_name.split("/")[1]
+                else:
+                    gene_key = gene_name
+                obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, 1), obs=data.Y[gene_key])        
         return data
 
         

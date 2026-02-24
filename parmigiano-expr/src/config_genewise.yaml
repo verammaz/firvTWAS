@@ -11,6 +11,9 @@ genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/geno
 annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/'
 gene_list: 'gene_list1.txt'
 
+# Train/Test split
+train_test: False
+
 # Model parameters
 beta: 25  # Beta parameter for MAF weights
 lr: 0.1   # Learning rate

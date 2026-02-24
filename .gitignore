@@ -7,3 +7,5 @@ initial_work/
 *.log
 */figures*/
 */scripts/slurm/logs*/
+parmigiano-expr/src/seed_genes*
+parmigiano-expr/src/scaling/

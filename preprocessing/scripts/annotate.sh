@@ -11,4 +11,4 @@ CHRO_NB=$((SLURM_ARRAY_TASK_ID))
 
 # Run script
 scripts=/gpfs/commons/home/vmazeeva/firvTWAS/preprocessing/scripts
-python ${scripts}/map_annotate_variants.py -chrom ${CHRO_NB} --use_ref_alleles
+python -u ${scripts}/map_annotate_variants.py -chrom ${CHRO_NB} --use_ref_alleles

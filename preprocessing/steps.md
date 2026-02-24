@@ -66,13 +66,8 @@ python rename_genotype_mapping.py # generates participant_id -> sample_id mappin
 ./submit_genotype_jobs.sh
 ```
 
-11. Add additional annotation columns
+11.
+Subset expression matrix to only genes for which we have G + Z matrices
 ```bash
-python add_annotations.py
-```
-
-12. Train / Test Split
-Example: Create holdout set (ROSMAP DLPFC)
-```bash
-sbatch tr
+python subset_expression.py
 ```

@@ -15,7 +15,7 @@ echo "=========================================="
 JOB_ID=$(sbatch --job-name="annotate" \
     --output="logs/annotate/annotate_chr%a.out" \
     --error="logs/annotate/annotate_chr%a.err" \
-    --array=21 \
+    --array=1-22 \
     --time=10:00:00 \
     --mem=100G \
     --cpus-per-task=8 \

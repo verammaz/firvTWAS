@@ -46,17 +46,8 @@ This will submit separate SLURM jobs for each gene count. Monitor jobs with:
 squeue -u $USER
 ```
 
-### Option 2: Run Single Experiment Locally
 
-```bash
-python run_scaling_experiment.py \
-    --num_genes 100 \
-    --config config_genewise.yaml \
-    --gene_list gene_list_full.txt \
-    --output_dir scaling_experiments
-```
-
-### Option 3: Run Single Experiment via SLURM
+### Option 2: Run Single Experiment via SLURM
 
 ```bash
 sbatch --job-name=parmigiano_100genes \

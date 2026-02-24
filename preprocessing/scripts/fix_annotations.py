@@ -15,14 +15,19 @@ if __name__ == "__main__":
     ref_dir = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/reference"
     print(f"Processing chromosome {chrom}")
         
-    n_processed, n_total = 0, (len(os.listdir(os.path.join(annotation_dir, f"chr{chrom}")))-2)/2
+    n_processed, n_total = 0, (len([f for f in os.listdir(os.path.join(annotation_dir, f"chr{chrom}")) if f.endswith("_annotations.tsv.gz")]))
     for file in os.listdir(os.path.join(annotation_dir, f"chr{chrom}")):
         if not file.endswith("_annotations.tsv.gz"):
             continue
+        
         n_processed += 1
         print(f"Processing {file} ({n_processed}/{n_total})")
         gene = re.sub(r"_annotations\.tsv\.gz$", "", file)
-        
+
+        # check genotype exists
+        if not os.path.exists(os.path.join(genotype_dir, f"chr{chrom}", f"{gene}_genotypes.tsv.gz")):
+            print(f"Genotype file not found for {gene}")
+            continue
         
         anno_df = pd.read_csv(os.path.join(annotation_dir, f"chr{chrom}", file), sep = "\t")
         if 'variant_id' in anno_df.columns:
@@ -52,7 +57,7 @@ if __name__ == "__main__":
                 alt = counted_other[1]
             else:
                 alt = counted_other[0]
-            anno_varids.append(f"{int(row['chr_x'])}:{row['pos']}_{ref}_{alt}")
+            anno_varids.append(f"{int(row['chr_x'])}:{int(row['pos'])}_{ref}_{alt}")
         assert len(anno_varids) == len(anno_df), f"Mismatch: {len(anno_varids)} genotype variants vs {len(anno_df)} annotations"
         assert len(geno_df.columns) == len(anno_varids), f"Mismatch: {len(geno_df.columns)} genotype variants vs {len(anno_varids)} annotations"
         anno_df2['variant_id'] = anno_varids
@@ -60,7 +65,7 @@ if __name__ == "__main__":
         anno_df2.rename(columns={'chr_x': 'chr'}, inplace=True)
         anno_df2 = anno_df2.reset_index(drop=True)
         anno_df2.set_index('variant_id', inplace=True)
-        anno_df.index.name = 'variant_id'
+        anno_df2.index.name = 'variant_id'
         assert anno_df.values.shape == anno_df2.values.shape, f"Mismatch: {anno_df.values.shape} annotation matrix vs {anno_df2.values.shape} annotation matrix"
         assert (anno_df.values == anno_df2.values).all(), "Annotation matrices do not match"
-        anno_df.to_csv(os.path.join(annotation_dir, f"chr{chrom}", file), sep = "\t", index=True, compression="gzip")
+        anno_df2.to_csv(os.path.join(annotation_dir, f"chr{chrom}", file), sep = "\t", index=True, compression="gzip")

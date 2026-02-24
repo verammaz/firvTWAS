@@ -11,17 +11,23 @@
 # Usage: bash submit_scaling_experiments.sh
 
 # Configuration
-CONFIG_FILE="config_genewise.yaml"
-GENE_LIST="gene_list_all.txt"  # Update with your full gene list file
+CONFIG_FILE="/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src/config_genewise.yaml"
+GENE_LIST="/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src/scaling/gene_list_all.txt"  
 OUTPUT_DIR="experiments"
-BASE_DIR="/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src"
+BASE_DIR="/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src/scaling"
 
 # Array of gene counts to test
 # Adjust these based on your computational constraints
-GENE_COUNTS=(25 50 100 200 500 1000)
+GENE_COUNTS=(25) # 50 100 200 500 1000)
 
 # Create output directory
 mkdir -p ${OUTPUT_DIR}
+
+# Ensure PATH includes standard directories (important for SLURM environments)
+export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
+
+# Activate conda environment
+source /gpfs/commons/groups/knowles_lab/software/anaconda3/bin/activate
 
 # Submit jobs for each gene count
 for num_genes in "${GENE_COUNTS[@]}"; do
@@ -37,10 +43,10 @@ for num_genes in "${GENE_COUNTS[@]}"; do
         mem_gb=500
     fi
     
-    # Adjust time based on number of genes (rough estimate: ~1 min per gene)
-    time_hours=$((num_genes / 60 + 2))
-    if [ $time_hours -lt 2 ]; then
-        time_hours=2
+    # Adjust time based on number of genes
+    time_hours=$((num_genes / 60 + 10))
+    if [ $time_hours -lt 10 ]; then
+        time_hours=10
     fi
     if [ $time_hours -gt 48 ]; then
         time_hours=48
@@ -48,11 +54,11 @@ for num_genes in "${GENE_COUNTS[@]}"; do
     
     sbatch <<EOF
 #!/bin/bash
-#SBATCH --job-name=parmigiano_${num_genes}genes
-#SBATCH --output=${OUTPUT_DIR}/slurm_${num_genes}genes_%j.out
-#SBATCH --error=${OUTPUT_DIR}/slurm_${num_genes}genes_%j.err
-#SBATCH --time=${time_hours}:00:00
-#SBATCH --mem=${mem_gb}G
+#SBATCH --job-name=scaling_${num_genes}genes
+#SBATCH --output=${OUTPUT_DIR}/slurm_${num_genes}genes.out
+#SBATCH --error=${OUTPUT_DIR}/slurm_${num_genes}genes.err
+#SBATCH --time=48:00:00
+#SBATCH --mem=500G
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=cpu
 
@@ -66,11 +72,12 @@ for num_genes in "${GENE_COUNTS[@]}"; do
 cd ${BASE_DIR}
 
 # Run the experiment
-python run_scaling_experiment.py \
+python -u run_scaling_experiment.py \
     --num_genes ${num_genes} \
     --config ${CONFIG_FILE} \
     --gene_list ${GENE_LIST} \
-    --output_dir ${OUTPUT_DIR}
+    --output_dir ${OUTPUT_DIR}/${num_genes}genes \
+    --log_level DEBUG
 
 echo "Job completed for ${num_genes} genes"
 EOF

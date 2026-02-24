@@ -43,7 +43,7 @@ def process_gene(gene, file, samples, gene_variant_counts, variant_gene_counts):
 
         # --- Load annotations and sort by position ---
         annotations_file = os.path.join(ANNOTATIONS_DIR, file)
-        annotations = pd.read_csv(annotations_file, sep="\t", index_col="variant_id")
+        annotations = pd.read_csv(annotations_file, sep="\t").set_index("variant_id")
 
         # --- Load genotype (.raw) file ---
         raw = pd.read_csv(raw_file, delim_whitespace=True)
@@ -105,7 +105,7 @@ def process_gene(gene, file, samples, gene_variant_counts, variant_gene_counts):
    
         # --- Align with annotation order ---
         # Genotype still may have multiple variants at same position
-        variant_order = annotations.index.tolist() # chr:pos_ref_alt
+        variant_order = annotations.index.tolist() # variant_id index --> chr:pos_ref_alt
         # Match annotation variants to genotype variants using pre-built lookup
         common_variants = []
         for var in variant_order:  # chr:pos_ref_alt
@@ -169,14 +169,18 @@ def process_gene(gene, file, samples, gene_variant_counts, variant_gene_counts):
 
 
         # --- Resave annotations matrix ---
-        annotations.to_csv(annotations_file, sep="\t", index=True, compression="gzip")
+        annotations.to_csv(annotations_file, sep="\t", index=True, compression="gzip") #variant_id index
+        var_ids_file = os.path.join(ANNOTATIONS_DIR, f"{gene}_var_ids.txt")
+        with open(var_ids_file, "w") as f:
+            for var_id in annotations.index.tolist():
+                f.write(f"{var_id}\n")
         tensor_out = os.path.join(ANNOTATIONS_DIR, f"{gene}_annotations.pt")
         torch.save(torch.tensor(annotations.values, dtype=torch.float32), tensor_out)
 
 
         # --- Save tensor and full matrix ---
         tensor_out = os.path.join(GENOTYPES_DIR, f"{gene}_genotypes.pt")
-        geno_ordered.to_csv(os.path.join(GENOTYPES_DIR, f"{gene}_genotypes.tsv.gz"), sep="\t", index=True, compression="gzip")
+        geno_ordered.to_csv(os.path.join(GENOTYPES_DIR, f"{gene}_genotypes.tsv.gz"), sep="\t", index=True, compression="gzip") #IID index
         torch.save(torch.tensor(geno_ordered.values, dtype=torch.float32), tensor_out)
         
         # --- Save variant IDs (column names) ---
@@ -239,7 +243,7 @@ def main():
     print(f"Found {len(gene_files)} genes to process", flush=True)
 
     # --- Process genes in parallel using ThreadPoolExecutor ---
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor: # using NUM_THREADS is slower?
         # Submit all tasks
         future_to_gene = {
             executor.submit(process_gene, gene, file, samples, gene_variant_counts, variant_gene_counts): (gene, file)

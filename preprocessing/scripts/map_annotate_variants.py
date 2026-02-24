@@ -227,13 +227,22 @@ def get_wgsa(bim, ref_table=None):
 
         # Merge with BIM
         before_bim_merge = len(data)
+        # Filter BIM to positions that exist in data to reduce many-to-many matches
+        # Note: We still merge on ["chr", "pos"] only, which can create duplicates
+        # if BIM has multiple variants at same position, but this is intentional
+        # as we'll filter by alleles next
         data = data.merge(
             bim,
             on=["chr", "pos"],
             how="inner"
         )
         after_bim_merge = len(data)
-        print(f"  After merging with BIM: {after_bim_merge:,} variants (dropped {before_bim_merge - after_bim_merge:,} not in BIM)")
+        # Calculate actual dropped (negative means rows increased due to many-to-many merge)
+        dropped = before_bim_merge - after_bim_merge
+        if dropped < 0:
+            print(f"  After merging with BIM: {after_bim_merge:,} variants (gained {abs(dropped):,} due to many-to-many matches at same positions)")
+        else:
+            print(f"  After merging with BIM: {after_bim_merge:,} variants (dropped {dropped:,} not in BIM)")
 
         # Keep only variants where FASTA ref is in PLINK alleles
         before_allele_filter = len(data)
@@ -278,7 +287,7 @@ def get_wgsa(bim, ref_table=None):
         print(f"    REF = A2: {n_a2_ref:,} ({n_a2_ref/n_total:.2%})")
         print("--------------------------------")
         print(f"    ALT = A1: {alt_counts.get('A1', 0):,}")
-        print(f"    ALT = A2: {alt_counts.get('A2', 0):,}\n")
+        print(f"    ALT = A2: {alt_counts.get('A2', 0):,}")
         print("--------------------------------\n")
         data = data.drop(columns=['id', 'cm', 'a1', 'a2', 'plink_a1_ref', 'plink_alt', 'ref_fasta'])
         data['chr'] = data['chr'].apply(de_norm_chr)
@@ -484,7 +493,7 @@ def annotate(gene_pos, bim, ref_table=None):
         # Ensure chr and pos are still columns (not index) before creating variant_id
         if anno.index.name is not None and anno.index.name in ['chr', 'pos']:
             anno = anno.reset_index()
-        anno['variant_id'] = anno['chr'].astype(str) + ':' + anno['pos'].astype(str) + '_' + anno['ref'] + '_' + anno['alt']
+        anno['variant_id'] = anno['chr'].astype(int).astype(str) + ':' + anno['pos'].astype(int).astype(str) + '_' + anno['ref'] + '_' + anno['alt']
         anno.set_index('variant_id', inplace=True)
         # Ensure index name is set (pandas sometimes doesn't preserve it)
         anno.index.name = 'variant_id'
@@ -524,6 +533,10 @@ def annotate(gene_pos, bim, ref_table=None):
         anno['dist_to_TSS'] = np.log10(np.abs(anno['dist_to_TSS']) + 1e-10)
 
         if len(anno) != 0: # dont save empty df
+            var_ids = anno.index.tolist()
+            with open(os.path.join(ANNOTATIONS_DIR, f"{gene}_var_ids.txt"), "w") as f:
+                for var_id in var_ids:
+                    f.write(f"{var_id}\n")
             anno.to_csv(os.path.join(ANNOTATIONS_DIR, f"{gene}_annotations.tsv.gz"), sep="\t", index=True, compression="gzip")
 
     print(f"Total genes: {total_genes}")

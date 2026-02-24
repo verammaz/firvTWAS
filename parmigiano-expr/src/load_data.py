@@ -2,26 +2,45 @@
 import numpy as np
 import pandas as pd
 import os
+import time
 from dataclasses import dataclass
 import torch
 import utils
 
+# Get logger
+def get_logger():
+    return utils.get_logger()
 
-def load_residualized_covariates(config, device):
-    covariates = pd.read_csv(config['covariates_path'], sep = "\t").set_index("sample_id")
-    tpm = pd.read_csv(config['expression_path'], sep = "\t").set_index("feature")
-    print("# Genes overall:", len(tpm))
+
+def load_residualized_covariates(config, device, dir=None):
+    """
+    Load residualized covariates and expression data
+    If train_dir and test_dir are provided, load from those directories
+    Otherwise, load from original paths in config
+    """
+    if dir is not None:
+        # Loading from train/test split directories
+        covariates_path = os.path.join(dir, 'covariates.tsv')
+        expression_path = os.path.join(dir, 'tpm.tsv')
+    else:
+        covariates_path = config['covariates_path']
+        expression_path = config['expression_path']
+    
+    logger = get_logger()
+    covariates = pd.read_csv(covariates_path, sep = "\t").set_index("sample_id")
+    tpm = pd.read_csv(expression_path, sep = "\t").set_index("feature")
+    logger.debug(f"# Genes overall: {len(tpm)}")
     tpm = tpm[covariates.index] # order same as covariates.
     chr_gene = utils.get_chr_gene(tpm, config['genes'])
     tpm = tpm.loc[chr_gene['feature']]
-    print("# Genes for joint fit: ", len(tpm))
+    logger.info(f"# Genes for joint fit: {len(tpm)}")
     
     covariate_cols = ['biological_sex','eas_prob',
      'afr_prob',
      'amr_prob',
      'sas_prob',
      'eur_prob', 'tissue',
-      'age', 'pc1','pc2','pc3','pc4','pc5', 'cohort', 
+     'age', 'pc1','pc2','pc3','pc4','pc5', 'cohort', 
      'rna_lib_prep_type','rna_strandedness','astrocyte',
      'endothelial_cell',
      'excitatory_neuron',
@@ -32,33 +51,59 @@ def load_residualized_covariates(config, device):
      'others',
      'pericyte']
     covariates_scaled = utils.preprocess_covariates(covariates, covariate_cols)
+    logger.debug(f"Covariates shape: {covariates_scaled.shape}")
     tpm_scaled = utils.scale_tpm_matrix(tpm, median_filter = 0)
+    logger.info(f"# Genes after scaling/filtering: {len(tpm_scaled)}")
+    logger.debug(f"TPM scaled shape: {tpm_scaled.shape}")
+    logger.info(f"Residualizing expression for {len(tpm_scaled)} genes...")
     residualized_Y = {}
-    for GENE in tpm_scaled.index:
-        residualized_Y[GENE.split(".")[0]] = utils.residualize_expression_single_gene(tpm_scaled.loc[GENE], covariates_scaled, device) # residualize out covariates
+    for idx, GENE in enumerate(tpm_scaled.index, 1):
+        gene_start = time.time()
+        try:
+            if idx == 1:
+                logger.debug(f"  Starting residualization (device: {device})...")
+                logger.debug(f"  Gene {idx}: {GENE}, expr shape: {tpm_scaled.loc[GENE].shape}, covariates shape: {covariates_scaled.shape}")
+            expr_series = tpm_scaled.loc[GENE]
+            logger.debug(f"  Gene {idx}/{len(tpm_scaled)}: {GENE} - Starting residualization...")
+            logger.debug(f"  Gene {idx}: Calling residualize_expression_single_gene...")
+            result = utils.residualize_expression_single_gene(expr_series, covariates_scaled, device)
+            logger.debug(f"  Gene {idx}: residualize_expression_single_gene completed")
+            residualized_Y[GENE.split(".")[0]] = result
+            gene_time = time.time() - gene_start
+            logger.debug(f"  Gene {idx}/{len(tpm_scaled)}: {GENE} - Completed in {gene_time:.2f}s")
+            if idx == 1 or idx % 5 == 0 or idx == len(tpm_scaled):
+                logger.debug(f"  Progress: {idx}/{len(tpm_scaled)} genes residualized (last gene: {gene_time:.2f}s)")
+        except Exception as e:
+            import traceback
+            logger.error(f"ERROR residualizing gene {idx} ({GENE}): {e}")
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+            raise
+    logger.debug(f"Completed residualization for {len(residualized_Y)} genes")
     return covariates_scaled, residualized_Y
 
 
 
-def load_genes(config):
+def load_genes(config, genotype_dir=None, annotation_dir=None):
     '''
     Load genotype and annotation matrices
     INPUT:
         - config: configuration dictionary
-            Option 1 (pre-generated matrices):
-                - genotype_path: path to N x total_variants matrix
-                - annotation_path: path to total_variants x Q matrix
-            Option 2 (individual gene files):
-                - genotype_dir: directory containing gene-specific genotype files
-                - annotation_dir: directory containing gene-specific annotation files
-                - gene_list: list of gene names OR path to file with gene names (one per line)
-            - sample_col: name of sample ID column (default: 'SampleID')
+        - genotype_dir: optional override for genotype directory
+        - annotation_dir: optional override for annotation directory
     OUTPUT:
         - G: genotype matrix (N individuals x total variants)
         - Z: annotation matrix (total variants x Q annotations)
     '''
+    logger = get_logger() 
+    
     # Get sample column name
     sample_col = config.get('sample_col', 'SampleID')
+    
+    # Use provided directories or fall back to config
+    if genotype_dir is None:
+        genotype_dir = config.get('genotype_dir')
+    if annotation_dir is None:
+        annotation_dir = config.get('annotation_dir')
     
     # Option 1: Load pre-generated matrices
     if 'genotype_path' in config and 'annotation_path' in config:
@@ -66,27 +111,50 @@ def load_genes(config):
         Z = pd.read_csv(config['annotation_path'], sep='\t', index_col=0)
         
     # Option 2: Load and concatenate individual gene files
-    elif 'genotype_dir' in config and 'annotation_dir' in config:
-        
+    elif genotype_dir is not None and annotation_dir is not None:
+        var_ids_ref_alt = []
+        var_ids_counted_other = []
         G_list = []
         Z_list = []
         
         for gene in config['genes']:
-            # Load genotype file
-            g_path = os.path.join(config['genotype_dir'], f"{gene}_genotypes.tsv.gz")
-            g = pd.read_csv(g_path, sep='\t', index_col=0)
-            
-            # Load annotation file
-            z_path = os.path.join(config['annotation_dir'], f"{gene}_annotations.tsv.gz")
-            z = pd.read_csv(z_path, sep='\t', index_col=0)
-            
-            # Prefix variant names with gene
-            g.columns = [f"{gene}_{col}" for col in g.columns]
-            z.index = [f"{gene}_{idx}" for idx in z.index]
-            
-            G_list.append(g)
-            Z_list.append(z)
-        
+           
+            try:
+                # Load genotype file
+                g_path = os.path.join(genotype_dir, f"{gene}_genotypes.tsv.gz")
+                logger.debug(f"Loading genotype file {g_path}")
+                g = pd.read_csv(g_path, sep='\t', index_col=0) 
+                g.index.name = 'IID'
+                assert g.index.name == 'IID', "IID column not found in genotype file"
+                logger.debug(f"Genotype file head:\n{g.head()}")
+                
+                # Load annotation file
+                z_path = os.path.join(annotation_dir, f"{gene}_annotations.tsv.gz")
+                logger.debug(f"Loading annotation file {z_path}")
+                z = pd.read_csv(z_path, sep='\t', index_col=0) 
+                if "chr" == z.index.name: #TODO: some files lost index column --> fix this
+                    z = z.reset_index()
+                    z.index.name = 'variant_id'
+                    z.index = z['chr'] + ":" + z['pos'] 
+                # assume variant_id is index --> chr:pos(_A1_A2)
+                z.index.name = 'variant_id'
+                logger.debug(f"Annotation file head:\n{z.head()}")
+
+                var_ids_ref_alt.extend(z.index.tolist()) # chr:pos_ref_alt
+                var_ids_counted_other.extend(g.columns.tolist()) # chr:pos_a1_a2
+
+                # Prefix variant names with gene
+                g.columns = [f"{gene}_{col}" for col in g.columns]
+                z.index = [f"{gene}_{idx}" for idx in z.index]
+                
+                G_list.append(g)
+                Z_list.append(z)
+
+            except Exception as e:
+                logger.warning(f"Error loading gene {gene}: {e}")
+                logger.warning(f"Skipping gene {gene}")
+                continue
+                
         # Concatenate all genes
         G = pd.concat(G_list, axis=1)
         Z = pd.concat(Z_list, axis=0)
@@ -94,23 +162,70 @@ def load_genes(config):
     else:
         raise ValueError("Config must specify either (genotype_path, annotation_path) "
                         "or (genotype_dir, annotation_dir, gene_list)")
-    G.columns = G.columns.str.split("_").str[0]
-    Z.index = Z.index.str.split("_").str[0]
-    print(G.shape, Z.shape)
-    print(Z.index[0:10])
-    print(G.columns[0:10])
+    # Debug: Check variant IDs before processing
+    logger.debug(f"\nBefore processing variant IDs:")
+    logger.debug(f"  G column example: {G.columns[0] if len(G.columns) > 0 else 'N/A'}")
+    logger.debug(f"  Z index example: {Z.index[0] if len(Z.index) > 0 else 'N/A'}")
+    if Z.index.duplicated().sum() > 0:
+        logger.warning(f"Z has duplicate indices: {Z.index.duplicated().sum()}")
+    if G.columns.duplicated().sum() > 0:
+        logger.warning(f"G has duplicate columns: {G.columns.duplicated().sum()}")
+    
+    # chr/GENE_chr:pos(_A1_A2) --> GENE_chr:pos
+    G.columns = (G.columns.str.split("_").str[0:2].str.join("_")).str.split("/").str[1]
+    Z.index = (Z.index.str.split("_").str[0:2].str.join("_")).str.split("/").str[1]
+
+    logger.debug(f"\nAfter processing variant IDs:")
+    logger.info(f"Genotype matrix: {G.shape}, Annotation matrix: {Z.shape}")
+    logger.debug(f"  G column example: {G.columns[0] if len(G.columns) > 0 else 'N/A'}")
+    logger.debug(f"  Z index example: {Z.index[0] if len(Z.index) > 0 else 'N/A'}")
+    logger.debug(f"  Z has duplicate indices: {Z.index.duplicated().sum()}")
+    logger.debug(f"  Unique Z indices: {Z.index.nunique()}/{len(Z.index)}")
+    logger.debug(f"  Unique G columns: {G.columns.nunique()}/{len(G.columns)}")
+    logger.debug(f"  First 10 Z indices: {list(Z.index[0:10])}")
+    logger.debug(f"  First 10 G columns: {list(G.columns[0:10])}")
+
+    if Z.index.duplicated().sum() > 0:
+        logger.warning(f"Z has duplicate indices: {Z.index.duplicated().sum()}")
+    if G.columns.duplicated().sum() > 0:
+        logger.warning(f"G has duplicate columns: {G.columns.duplicated().sum()}")
+
     # Ensure alignment between genotype and annotation
-    assert set(G.columns) == set(Z.index), "Genotype columns must match annotation rows"
+    if set(G.columns) != set(Z.index):
+        # print mismatched elements
+        g_cols_set = set(G.columns)
+        z_idx_set = set(Z.index)
+        logger.error(f"Variants in G but not in Z: {g_cols_set - z_idx_set}")
+        logger.error(f"Variants in Z but not in G: {z_idx_set - g_cols_set}")
+        raise ValueError("Genotype columns must match annotation rows")
+    
     Z = Z.loc[G.columns]  # Reorder annotations to match genotype column order
+    
+    Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
+    
+    log_cols = Z.filter(like="log_counts").columns
+    Z["chromBPnet"] = Z[log_cols].max(axis=1)
+    Z = Z.drop(columns=log_cols)
+
+    enformer = Z.filter(like="TF_delta_min").columns
+    Z["TF_delta_min"] = Z[enformer].max(axis=1)
+    Z = Z.drop(columns=enformer)
+
+    enformer = Z.filter(like="TF_delta_max").columns
+    Z["TF_delta_max"] = Z[enformer].max(axis=1)
+    Z = Z.drop(columns=enformer)
     
     # Impute missing values
     G, Z = utils.impute_missing(G, Z)
-    Z = utils.scale(Z)
+    if config['scale_anno']:
+        Z = utils.scale(Z)
+    else:
+        Z = Z
     
-    print(f"Loaded {G.shape[0]} individuals, {G.shape[1]} variants across genes")
-    print(f"Annotation matrix: {Z.shape[1]} annotations per variant")
+    logger.info(f"Loaded {G.shape[0]} individuals, {G.shape[1]} variants across genes")
+    logger.info(f"Loaded {Z.shape[1]} annotations per variant")
     
-    return G, Z
+    return G, Z, var_ids_counted_other, var_ids_ref_alt
 
 
 @dataclass
@@ -168,6 +283,7 @@ class DataTensors:
         '''
         # Ensure sample alignment between X/Y and G
         assert set(X.index) == set(G.index), "Sample IDs must match between phenotype and genotype files"
+        assert set(G.columns) == set(Z.index), "Variant IDs must match between genotype and annotation files"
         
         # Reorder G to match X/Y sample order
         G = G.loc[X.index]
