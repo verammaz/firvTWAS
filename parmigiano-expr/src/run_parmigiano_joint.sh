@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=parmigiano_seed_genes
+#SBATCH --job-name=parmigiano
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.err
 #SBATCH --time=10:00:00
@@ -29,10 +29,19 @@ gene_list=genes_list_seed.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
 annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/
 train_test=True
+use_clip_norm=True
+clip_norm=10.0
 lr=0.1
 epochs=500
 random_genes=False
 log_level=INFO
+no_filter=False
+burden=False
+skat=False
+refits=1
+no_wg=False
+no_rhog=False
+use_brr=True
 
 # Parse command line arguments with long-form options
 while [[ $# -gt 0 ]]; do
@@ -85,6 +94,42 @@ while [[ $# -gt 0 ]]; do
             log_level="$2"
             shift 2
             ;;
+        --use_clip_norm|--use-clip-norm)
+            use_clip_norm="$2"
+            shift 2
+            ;;
+        --clip_norm|--clip-norm)
+            clip_norm="$2"
+            shift 2
+            ;;
+        --no_filter|--no-filter)
+            no_filter="$2"
+            shift 2
+            ;;
+        --burden|--burden-test)
+            burden="$2"
+            shift 2
+            ;;
+        --skat|--skat-test)
+            skat="$2"
+            shift 2
+            ;;
+        --refits|--refits-number)
+            refits="$2"
+            shift 2
+            ;;
+        --no_wg|--no-wg)
+            no_wg="$2"
+            shift 2
+            ;;
+        --no_rhog|--no-rhog)
+            no_rhog="$2"
+            shift 2
+            ;;
+        --use_brr|--use-brr)
+            use_brr="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -100,6 +145,15 @@ while [[ $# -gt 0 ]]; do
             echo "  --epochs, --epoch INT                    Number of epochs (default: 500)"
             echo "  --phenotype, --pheno FILE                Phenotype file"
             echo "  --random_genes, --random-genes BOOL      Use random genes (default: False)"
+            echo "  --use_clip_norm, --use-clip-norm BOOL    Use clip gradient norm (default: True)"
+            echo "  --clip_norm, --clip-norm FLOAT          Clip gradient norm (default: 10.0)"
+            echo "  --no_filter, --no-filter BOOL            Don't learn filter (default: False)"
+            echo "  --burden, --burden-test BOOL            Burden test (default: False)"
+            echo "  --skat, --skat-test BOOL                SKAT test (default: False)"
+            echo "  --refits, --refits-number INT           Number of refits (default: 1)"
+            echo "  --no_wg, --no-wg BOOL                    Remove w_g from model (default: False)"
+            echo "  --no_rhog, --no-rhog BOOL                Remove rho_g from model(default: False)"
+            echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -124,7 +178,7 @@ fi
 
 
 # scale annotation matrix
-python -u run_parmigiano.py --config $config_file \
+python -u parmigiano_joint.py --config $config_file \
                          --gene_list $gene_list \
                          --expression_path $expression_path \
                          --annotation_dir $annotation_dir \
@@ -133,31 +187,33 @@ python -u run_parmigiano.py --config $config_file \
                          --train_test $train_test \
                          --lr $lr \
                          --epochs $epochs \
-                         --log_level $log_level
+                         --use_clip_norm $use_clip_norm \
+                         --no_filter $no_filter \
+                         --clip_norm $clip_norm \
+                         --log_level $log_level \
+                         --no_wg $no_wg \
+                         --no_rhog $no_rhog \
+                         --use_brr $use_brr
+                         --refits $refits
 
 # Move SLURM output files to the run output directory if it exists
-if [ -n "$output_dir" ] && [ -f "${output_dir}/current_run_output_dir.txt" ]; then
-    run_output_dir=$(cat "${output_dir}/current_run_output_dir.txt")
-    if [ -n "$run_output_dir" ] && [ -d "$run_output_dir" ]; then
-        # Get the current SLURM job ID
-        if [ -n "$SLURM_JOB_ID" ]; then
-            # Find and move .out and .err files (they might be in bash_outputs/seed_genes/ or current directory)
-            # Check common locations for SLURM output files
-            for slurm_file in "bash_outputs/seed_genes/slurm_${SLURM_JOB_ID}.out" \
-                             "bash_outputs/seed_genes/slurm_${SLURM_JOB_ID}.err" \
-                             "slurm_${SLURM_JOB_ID}.out" \
-                             "slurm_${SLURM_JOB_ID}.err"\
-                             "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.out" \
-                             "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.err" \
-                             "/gpfs/commons/home/vmazeeva/bash_outputs/parmigiano_seed_genes_${SLURM_JOB_ID}.out" \
-                             "/gpfs/commons/home/vmazeeva/bash_outputs/parmigiano_seed_genes_${SLURM_JOB_ID}.err"; do
-                if [ -f "$slurm_file" ]; then
-                    mv "$slurm_file" "${run_output_dir}/$(basename "$slurm_file")"
-                    echo "Moved $slurm_file to ${run_output_dir}/"
-                fi
-            done
-        fi
-        # Clean up the temporary file
-        rm -f "${output_dir}/current_run_output_dir.txt"
+if [ -n "$output_dir" ]; then
+    # Get the current SLURM job ID
+    if [ -n "$SLURM_JOB_ID" ]; then
+        # Find and move .out and .err files (they might be in bash_outputs/seed_genes/ or current directory)
+        # Check common locations for SLURM output files
+        for slurm_file in "bash_outputs/seed_genes/slurm_${SLURM_JOB_ID}.out" \
+                            "bash_outputs/seed_genes/slurm_${SLURM_JOB_ID}.err" \
+                            "slurm_${SLURM_JOB_ID}.out" \
+                            "slurm_${SLURM_JOB_ID}.err" \
+                            "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.out" \
+                            "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.err" \
+                            "/gpfs/commons/home/vmazeeva/bash_outputs/parmigiano_seed_genes_${SLURM_JOB_ID}.out" \
+                            "/gpfs/commons/home/vmazeeva/bash_outputs/parmigiano_seed_genes_${SLURM_JOB_ID}.err"; do
+            if [ -f "$slurm_file" ]; then
+                mv "$slurm_file" "${output_dir}/$(basename "$slurm_file")"
+                echo "Moved $slurm_file to ${output_dir}/"
+            fi
+        done
     fi
 fi

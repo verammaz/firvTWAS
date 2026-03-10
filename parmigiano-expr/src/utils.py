@@ -16,56 +16,38 @@ from sklearn.linear_model import LinearRegression
 # Global logger - will be initialized by setup_logging
 logger = None
 
+
 def setup_logging(level='INFO', log_file=None):
     """
-    Setup logging configuration for the parmigiano-expr package
-    
+    Setup logging configuration for the parmigiano package.
     INPUT:
         - level: Logging level string ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
         - log_file: Optional path to log file. If None, logs only to console.
-    
     OUTPUT:
         - logger: Configured logger object
     """
     global logger
-    
-    # Convert string level to logging constant
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {level}')
-    
-    # Create logger
     logger = logging.getLogger('parmigiano')
     logger.setLevel(numeric_level)
-    
-    # Remove existing handlers to avoid duplicates
     logger.handlers = []
-    
-    # Create formatter
-    # formatter = logging.Formatter(
-    #     '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    #     datefmt='%Y-%m-%d %H:%M:%S'
-    # )
     formatter = logging.Formatter('%(message)s')
-    
-    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    
-    # File handler (if specified)
     if log_file:
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(numeric_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-    
     return logger
 
 
 def get_logger():
-    """Get the global logger, creating it if it doesn't exist"""
+    """Get the global logger, creating it if it doesn't exist."""
     global logger
     if logger is None:
         logger = setup_logging()
@@ -73,45 +55,47 @@ def get_logger():
 
 
 def scale(df):
-    return (df-df.min())/ (df.max() - df.min())
+    return (df - df.min()) / (df.max() - df.min())
+
 
 def impute_missing(G, Z):
-    '''
-    Impute missing values in genotype and annotation matrices
+    """
+    Impute missing values in genotype and annotation matrices.
     INPUT:
         - G: genotype matrix (N individuals x P variants)
         - Z: annotation matrix (P variants x Q annotations)
     OUTPUT:
         - G: genotype matrix with missing values imputed (variant means)
         - Z: annotation matrix with missing values imputed (zeros)
-    '''
+    """
     logger = get_logger()
-    # Impute genotypes with variant mean (column-wise)
     if G.isnull().any().any():
         n_missing_g = G.isnull().sum().sum()
         G = G.fillna(G.mean(axis=0))
         logger.info(f"Imputed {n_missing_g} missing genotype values using variant means")
-    
-    if Z.isnull().any().any(): # Fill annotations with zeros
+    if Z.isnull().any().any():
         n_missing_z = Z.isnull().sum().sum()
         Z = Z.fillna(0)
         logger.info(f"Imputed {n_missing_z} missing annotation values with zeros")
     return G, Z
-    
-def get_MAF_weights(G, device, b_dist = 25):
-    '''
-    Set variant weights based on MAF and from Beta(1,b_dist) distribution
-    This should be run before imputation     
-    '''
+
+
+def get_MAF_weights(G, device, b_dist=25):
     maf = torch.round(G).mean(0) / 2
-    maf[maf>0.5] = 1 - maf[maf>0.5] # this shouldn't change anything, just checking that AF is the correct direction
-    maf = torch.clamp(maf, min=maf[maf > 0].min(), max=0.5).to(device)
+    maf[maf > 0.5] = 1 - maf[maf > 0.5]
+    
+    # Guard against all-zero MAF (monomorphic variants in this split)
+    nonzero_maf = maf[maf > 0]
+    if len(nonzero_maf) == 0:
+        # All variants monomorphic - return zero weights
+        return torch.zeros_like(maf)
+    
+    maf = torch.clamp(maf, min=nonzero_maf.min(), max=0.5).to(device)
     beta = dist.Beta(torch.tensor(1.0, device=device), torch.tensor(float(b_dist), device=device))
     return torch.exp(beta.log_prob(maf))
 
 
-
-def preprocess_covariates(covariates, covariate_cols):    
+def preprocess_covariates(covariates, covariate_cols):
     df = covariates[covariate_cols].copy()
     if 'age' in df.columns:
         global_mean = df['age'].mean()
@@ -126,7 +110,7 @@ def preprocess_covariates(covariates, covariate_cols):
         )
     categorical_vars = ['biological_sex', 'tissue', 'cohort', 'rna_lib_prep_type', 'rna_strandedness']
     categorical_vars = [c for c in categorical_vars if c in df.columns]
-    df = pd.get_dummies(df, columns=categorical_vars,drop_first=True) # one hot encode
+    df = pd.get_dummies(df, columns=categorical_vars, drop_first=True)
     continuous_vars = df.select_dtypes(include='number').columns
     continuous_vars = [c for c in continuous_vars if not c.startswith(tuple(categorical_vars))]
     scaler = StandardScaler()
@@ -135,46 +119,30 @@ def preprocess_covariates(covariates, covariate_cols):
     return df
 
 
-def scale_tpm_matrix(tpm, median_filter = 0):
-    tpm_scaled = tpm[tpm.median(1) > median_filter].copy() # remove lowly expressed genes
+def scale_tpm_matrix(tpm, median_filter=0):
+    tpm_scaled = tpm[tpm.median(1) > median_filter].copy()
     tpm_scaled = np.log1p(tpm_scaled)
-    # row_means = tpm_scaled.mean(axis=1)
-    # row_stds = tpm_scaled.std(axis=1)
-    # tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
+    row_means = tpm_scaled.mean(axis=1)
+    row_stds = tpm_scaled.std(axis=1)
+    tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
     return tpm_scaled
 
 
-def residualize_expression_single_gene(expr, covariates, device = 'cpu', stats = False):
+def residualize_expression_single_gene(expr, covariates, device='cpu', stats=False):
     logger = get_logger()
-    
     common_samples = expr.index.intersection(covariates.index)
     logger.debug(f"Found {len(common_samples)} common samples")
-    
     expr_aligned = expr.loc[common_samples]
     cov_aligned = covariates.loc[common_samples]
-    logger.debug(f"Aligned shapes: expr={expr_aligned.shape}, cov={cov_aligned.shape}")
-
-    # Use simple LinearRegression like the original version - pass DataFrames directly
-    # This matches what worked in run_parmigiano.py
     logger.debug("Fitting LinearRegression...")
     lr = LinearRegression(fit_intercept=True, n_jobs=1)
-    lr.fit(cov_aligned, expr_aligned) 
+    lr.fit(cov_aligned, expr_aligned)
     logger.debug("LinearRegression.fit() completed")
-    
-    logger.debug("Predicting...")
-    pred = lr.predict(cov_aligned) # Predict and compute residuals
-    logger.debug("LinearRegression.predict() completed")
-    
-    logger.debug("Computing residuals...")
+    pred = lr.predict(cov_aligned)
     resid = expr_aligned - pred
-    logger.debug("Residuals computed")
     if stats:
-        coef = pd.Series(
-            lr.coef_,
-            index=cov_aligned.columns,
-            name='beta'
-        )
-        stats = {
+        coef = pd.Series(lr.coef_, index=cov_aligned.columns, name='beta')
+        stats_out = {
             'r2': r2_score(expr_aligned, pred),
             'mse': mean_squared_error(expr_aligned, pred),
             'n_samples': len(common_samples),
@@ -182,46 +150,44 @@ def residualize_expression_single_gene(expr, covariates, device = 'cpu', stats =
             'expr_std': expr_aligned.std(),
             'resid_std': resid.std()
         }
-        return resid, stats
-    
-    # Convert device to string if it's a torch.device object
+        return resid, stats_out
     if isinstance(device, torch.device):
         device_str = str(device)
     else:
         device_str = device
-    
-    logger.debug(f"Converting residuals to tensor on device={device_str}...")
     result = torch.as_tensor(resid.values, dtype=torch.float32, device=device_str)
-    logger.debug(f"Tensor conversion completed, result shape={result.shape}, device={result.device}")
-   
+    logger.debug(f"Residuals tensor shape={result.shape}, device={result.device}")
     return result
 
 
 def get_chr_gene(tpm, genes):
-    ens = pd.read_csv("/gpfs/commons/home/adas/58K_data/gencode/genes.bed", sep = "\t", header = None)[[0,3]]
-    ens.columns = ['CHR','ens']
+    ens = pd.read_csv("/gpfs/commons/home/adas/58K_data/gencode/genes.bed", sep="\t", header=None)[[0, 3]]
+    ens.columns = ['CHR', 'ens']
     temp = pd.DataFrame(tpm.index)
     temp['ens'] = temp['feature'].str.split(".").str[0]
-    chr_gene = temp.merge(ens)    
+    chr_gene = temp.merge(ens)
     chr_gene['label'] = chr_gene['CHR'] + "/" + chr_gene['ens']
-    chr_gene = chr_gene[chr_gene['label'].isin(genes)]  
-    return chr_gene[['feature','CHR']]
+    chr_gene = chr_gene[chr_gene['label'].isin(genes)]
+    return chr_gene[['feature', 'CHR']]
+
+
+
 
 def get_MAF(G):
     maf = torch.round(G).mean(0) / 2
     return maf
 
+
 def load_yaml(yaml_path):
-    """
-    Loads the YAML configuration file from the provided path.
-    """
     with open(yaml_path, 'r') as file:
         config = yaml.safe_load(file)
     return config
 
+
 def fill_defaults(args, yaml_config=None):
     """
     Fill in missing configuration values with defaults or override with YAML config.
+    Supports both joint and per-gene modes.
     """
     defaults = {
         'model': 'parmigiano',
@@ -229,41 +195,34 @@ def fill_defaults(args, yaml_config=None):
         'n_posterior': 50,
         'lr': 0.1,
         'output_dir': 'parmigiano_outputs',
-        'beta': 25,
+        'beta_maf': 25,
+        'brr_results_dir': None,
         'diagnosis_col': 'Diagnosis',
         'sample_col': 'SampleID',
-        'scale_anno': True,
+        'simulate': False,
+        'burden': False,
+        'no_wg': False,
+        'no_rhog': False,
+        'skat': False,
+        'chromosome': 'chr21',
+        'no_filter': False,
+        'scale_anno': False,
         'train_test': False,
-        'log_level': 'INFO',  # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-        'log_file': None  # Optional log file path
+        'log_level': 'INFO',
+        'log_file': None,
+        'refits': 1,
+        'use_brr': True
     }
-
-    # Override defaults with YAML config if provided
     if yaml_config:
         defaults.update(yaml_config)
-
-    # Override with CLI args if not None
     for key in defaults:
         arg_val = getattr(args, key, None)
         if arg_val is not None:
             defaults[key] = arg_val
-
-    # Required values that are not in the base defaults
-    required_keys = ['covariates_path', 'expression_path']
-    for key in required_keys:
-        arg_val = getattr(args, key, None)
-        if arg_val is not None:
-            defaults[key] = arg_val
-        elif key not in defaults or defaults[key] is None:
-            raise ValueError(f"You must provide --{key} argument or specify it in the YAML.")
-
     return defaults
 
 
 def str_to_bool(v):
-    """
-    Convert string to boolean. Handles common string representations.
-    """
     if isinstance(v, bool):
         return v
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -275,13 +234,12 @@ def str_to_bool(v):
 
 
 def parse_args():
-    """
-    Parses the command-line arguments.
-    """
     parser = argparse.ArgumentParser(description="Configuration for Parmigiano Package")
     parser.add_argument('--config', type=str, help="Path to the YAML configuration file")
-    parser.add_argument('--covariates_path', type=str, help="Path to covariates file")
-    parser.add_argument('--expression_path', type=str, help="Path to expression file")
+    # Data paths - joint mode uses covariates_path/expression_path; per-gene uses phenotype_path
+    parser.add_argument('--phenotype_path', type=str, help="Path to phenotype file (per-gene mode)")
+    parser.add_argument('--covariates_path', type=str, help="Path to covariates file (joint mode)")
+    parser.add_argument('--expression_path', type=str, help="Path to expression file (joint mode)")
     parser.add_argument('--diagnosis_col', type=str, help="Column name for trait. Default: Diagnosis")
     parser.add_argument('--sample_col', type=str, help="Column name for sample IDs. Default: SampleID")
     parser.add_argument('--genotype_path', type=str, help="Path to genotype matrix")
@@ -293,11 +251,27 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, help="Path to output directory")
     parser.add_argument('--epochs', type=int, help="Number of epochs to train")
     parser.add_argument('--lr', type=float, help="Learning rate")
-    parser.add_argument('--beta', type=int, help="Beta parameter for MAF weights")
+    parser.add_argument('--beta_maf', type=int, help="Beta parameter for MAF weights")
+    parser.add_argument('--use_brr', type=str_to_bool, help="Use Bayesian Ridge Regression results")
+    parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
+    # Per-gene specific flags
+    parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
+    parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")
+    parser.add_argument('--no_wg', type=str_to_bool, help="Remove w_g gene weight")
+    parser.add_argument('--no_rhog', type=str_to_bool, help="Remove rho_g proportion burden versus dispersion")
+    parser.add_argument('--skat', type=str_to_bool, help="SKAT mode (just variance)")
+    parser.add_argument('--chromosome', type=str, help="Chromosome of focus (per-gene analysis only)")
+    parser.add_argument('--tauT_path', type=str, help="Path for tauT weights (per-gene analysis only)")
+    parser.add_argument('--no_filter', type=str_to_bool, help="Don't filter variants by parmigiano threshold")
+    # Joint mode flags
     parser.add_argument('--scale_anno', type=str_to_bool, help="Scale annotation matrix")
     parser.add_argument('--train_test', type=str_to_bool, help="Split data into train and test sets")
-    parser.add_argument('--log_level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], 
-                       help="Logging level (default: INFO)")
+    # Logging
+    parser.add_argument('--log_level', type=str,
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help="Logging level (default: INFO)")
     parser.add_argument('--log_file', type=str, help="Optional path to log file")
-
+    parser.add_argument('--refits', type=int, help="Number of refits")
+    parser.add_argument('--use_clip_norm', type=str_to_bool, help="Use clip norm of weights (default: True)")
+    parser.add_argument('--clip_norm', type=float, help="Clip norm of weights (default: 10.0)")
     return parser.parse_args()

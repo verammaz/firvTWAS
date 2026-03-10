@@ -8,17 +8,21 @@ sample_col: SampleID
 
 # Genotype and annotation data (Option 2: Individual gene files)
 genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
-annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/'
 gene_list: 'gene_list1.txt'
 
+# Bayesian Ridge Regression results
+brr_results_dir: "/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge"
+
 # Train/Test split
-train_test: False
+train_test: True
 
 # Model parameters
 beta: 25  # Beta parameter for MAF weights
 lr: 0.1   # Learning rate
 epochs: 500  # Number of training epochs
 n_posterior: 50  # Number of posterior samples
+refits: 100
 
 # Output
-output_dir: test_results/
+output_dir: seed_genes_minmax
