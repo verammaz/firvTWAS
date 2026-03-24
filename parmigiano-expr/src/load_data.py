@@ -51,7 +51,7 @@ def load_residualized_covariates(config, device):
         'oligodendrocyte_progenitor_cell', 'others', 'pericyte'
     ]
     covariates_scaled = utils.preprocess_covariates(covariates, covariate_cols)
-    tpm_scaled = utils.scale_tpm_matrix(tpm, median_filter=0)
+    tpm_scaled = utils.scale_tpm_matrix(tpm, median_filter=0, scale_center=config.get('scale_center', True))
     logger.info(f"Residualizing expression for {len(tpm_scaled)} genes...")
     residualized_Y = {}
     for idx, GENE in enumerate(tpm_scaled.index, 1):

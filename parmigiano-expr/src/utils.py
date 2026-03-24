@@ -119,12 +119,14 @@ def preprocess_covariates(covariates, covariate_cols):
     return df
 
 
-def scale_tpm_matrix(tpm, median_filter=0):
+def scale_tpm_matrix(tpm, median_filter=0, scale_center=True):
     tpm_scaled = tpm[tpm.median(1) > median_filter].copy()
     tpm_scaled = np.log1p(tpm_scaled)
-    row_means = tpm_scaled.mean(axis=1)
-    row_stds = tpm_scaled.std(axis=1)
-    tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
+    # No centering or scaling?
+    if scale_center:
+        row_means = tpm_scaled.mean(axis=1)
+        row_stds = tpm_scaled.std(axis=1)
+        tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
     return tpm_scaled
 
 
@@ -211,8 +213,12 @@ def fill_defaults(args, yaml_config=None):
         'log_level': 'INFO',
         'log_file': None,
         'refits': 1,
-        'use_brr': True
+        'use_brr': True,
+        'scale_center': True,
     }
+
+    # TODO: match scale_center with brr_results_dir if use_brr is True
+
     if yaml_config:
         defaults.update(yaml_config)
     for key in defaults:
@@ -254,6 +260,7 @@ def parse_args():
     parser.add_argument('--beta_maf', type=int, help="Beta parameter for MAF weights")
     parser.add_argument('--use_brr', type=str_to_bool, help="Use Bayesian Ridge Regression results")
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
+    parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")

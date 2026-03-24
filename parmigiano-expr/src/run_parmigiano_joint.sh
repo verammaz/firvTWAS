@@ -28,6 +28,7 @@ config_file=config_genewise.yaml
 gene_list=genes_list_seed.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
 annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/
+brr_results_dir=/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge
 train_test=True
 use_clip_norm=True
 clip_norm=10.0
@@ -42,6 +43,9 @@ refits=100
 no_wg=False
 no_rhog=False
 use_brr=True
+scale_center=True
+
+# TODO: match scale_center with brr_results_dir if use_brr is True
 
 # Parse command line arguments with long-form options
 while [[ $# -gt 0 ]]; do
@@ -68,6 +72,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --annotation_dir|--annotation-dir|--annotations)
             annotation_dir="$2"
+            shift 2
+            ;;
+        --brr_results_dir|--brr-results-dir)
+            brr_results_dir="$2"
             shift 2
             ;;
         --train_test|--train-test)
@@ -130,6 +138,10 @@ while [[ $# -gt 0 ]]; do
             use_brr="$2"
             shift 2
             ;;
+        --scale_center|--scale-center)
+            scale_center="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -140,6 +152,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --gene_list, --gene-list, --genes FILE   Gene list file (default: genes_list_seed.txt)"
             echo "  --expression_path, --expr FILE          Expression data file"
             echo "  --annotation_dir, --annotations DIR      Annotation directory"
+            echo "  --brr_results_dir, --brr-results-dir DIR  BRR results directory"
             echo "  --train_test, --train-test BOOL         Enable train/test split (default: False)"
             echo "  --lr, --learning_rate FLOAT              Learning rate (default: 0.1)"
             echo "  --epochs, --epoch INT                    Number of epochs (default: 500)"
@@ -154,6 +167,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no_wg, --no-wg BOOL                    Remove w_g from model (default: False)"
             echo "  --no_rhog, --no-rhog BOOL                Remove rho_g from model(default: False)"
             echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
+            echo "  --scale_center, --scale-center BOOL      Scale expression matrix by center and scale (default: True)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -194,7 +208,8 @@ python -u parmigiano_joint.py --config $config_file \
                          --no_wg $no_wg \
                          --no_rhog $no_rhog \
                          --use_brr $use_brr \
-                         --refits $refits
+                         --refits $refits \
+                         --scale_center $scale_center
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then
