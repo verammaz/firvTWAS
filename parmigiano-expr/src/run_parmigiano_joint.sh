@@ -38,7 +38,7 @@ log_level=INFO
 no_filter=False
 burden=False
 skat=False
-refits=1
+refits=100
 no_wg=False
 no_rhog=False
 use_brr=True
@@ -193,7 +193,7 @@ python -u parmigiano_joint.py --config $config_file \
                          --log_level $log_level \
                          --no_wg $no_wg \
                          --no_rhog $no_rhog \
-                         --use_brr $use_brr
+                         --use_brr $use_brr \
                          --refits $refits
 
 # Move SLURM output files to the run output directory if it exists
