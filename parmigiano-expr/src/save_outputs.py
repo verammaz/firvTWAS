@@ -29,6 +29,8 @@ def save_results(losses, times, posterior_stats, config, annotations,
                  beta_samples=None, mu_samples=None,
                  train_r2=None, test_r2=None,
                  tau_history=None,
+                 tau1_history=None,
+                 tau2_history=None,
                  variant_ids_G=None, variant_ids_Z=None,
                  gene_indices=None,
                  save_full_samples=False):
@@ -40,14 +42,25 @@ def save_results(losses, times, posterior_stats, config, annotations,
     np.savetxt(os.path.join(config['output_dir'], "times.txt"), times)
 
     # --- Tau and threshold summary ---
-    try:
-        tau_df = pd.DataFrame()
-        tau_df['Annotation'] = annotations
-        tau_df['Tau'] = posterior_stats['tau']['mean'][0]
-        tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
-        tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
-    except Exception as e:
-        print(f"Could not save tau_T.csv: {e}")
+    if not config.get('tau12', False):
+        try:
+            tau_df = pd.DataFrame()
+            tau_df['Annotation'] = annotations
+            tau_df['Tau'] = posterior_stats['tau']['mean'][0]
+            tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
+            tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
+        except Exception as e:
+            print(f"Could not save tau_T.csv: {e}")
+    else:
+        try:
+            tau_df = pd.DataFrame()
+            tau_df['Annotation'] = annotations
+            tau_df['Tau1'] = posterior_stats['tau1']['mean'][0]
+            tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
+            tau_df['Tau2'] = posterior_stats['tau2']['mean'][0]
+            tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
+        except Exception as e:
+            print(f"Could not save tau_T.csv: {e}")
 
     # --- w_g and rho_g ---
     try:
@@ -78,11 +91,38 @@ def save_results(losses, times, posterior_stats, config, annotations,
 
     # --- Tau history across epochs ---
     if tau_history is not None:
+        assert tau1_history is None and tau2_history is None, "tau1_history and tau2_history must be None if tau_history is not None"
+        assert config.get('tau12', False), "tau12 must be False if tau_history is not None"
         valid_tau_history = [tau for tau in tau_history if tau is not None]
         if len(valid_tau_history) > 0:
             tau_history_array = np.array(valid_tau_history)
             tau_history_df = pd.DataFrame(tau_history_array, columns=annotations)
             tau_history_df.insert(0, 'epoch', range(len(valid_tau_history)))
+            tau_history_df.to_csv(os.path.join(config['output_dir'], 'tau_history.csv'), index=False)
+    if tau1_history is not None and tau2_history is not None:
+        assert tau_history is None, "tau_history must be None if tau1_history and tau2_history are not None"
+        assert config.get('tau12', False), "tau12 must be True if tau1_history and tau2_history are not None"
+        # Keep rows where both taus exist for the same training step (do not filter lists separately).
+        paired = [
+            (t1, t2)
+            for t1, t2 in zip(tau1_history, tau2_history)
+            if t1 is not None and t2 is not None
+        ]
+        if len(paired) > 0:
+            tau1_history_array = np.stack([np.asarray(p[0], dtype=float).ravel() for p in paired])
+            tau2_history_array = np.stack([np.asarray(p[1], dtype=float).ravel() for p in paired])
+            n_ann = tau1_history_array.shape[1]
+            assert n_ann == len(annotations), "Number of annotations must match number of columns in tau1_history and tau2_history"
+            cols1 = [f"Tau1_{a}" for a in annotations]
+            cols2 = [f"Tau2_{a}" for a in annotations]
+            tau_history_df = pd.concat(
+                [
+                    pd.DataFrame(tau1_history_array, columns=cols1),
+                    pd.DataFrame(tau2_history_array, columns=cols2),
+                ],
+                axis=1,
+            )
+            tau_history_df.insert(0, "epoch", np.arange(len(paired), dtype=int))
             tau_history_df.to_csv(os.path.join(config['output_dir'], 'tau_history.csv'), index=False)
 
     # --- Simulated parameters ---

@@ -19,7 +19,7 @@ import pandas as pd
 import utils
 import load_data
 from save_outputs import save_results
-from models import parmigiano_expression, simulate_expression
+from models import parmigiano_expression, simulate_expression, parmigiano_expression_nonlinear
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ def _extract_samples(samples, data_obj, key_prefix):
     return result
 
 
-def _extract_tau_history_step(epoch):
+def _extract_tau_history_step(epoch, tau='tau'):
     """Try to read current tau from pyro param store. Returns numpy array or None."""
     logger = utils.get_logger()
     try:
@@ -52,7 +52,7 @@ def _extract_tau_history_step(epoch):
             current_tau = pyro.param("AutoGuideList.1.tau").detach().cpu().numpy().copy()
         except KeyError:
             tau_params = {name: pyro.param(name).detach().cpu().numpy().copy()
-                          for name in pyro.get_param_store().keys() if "tau" in name.lower()}
+                          for name in pyro.get_param_store().keys() if tau in name.lower()}
             if len(tau_params) == 0:
                 return None
             current_tau = list(tau_params.values())[0]
@@ -323,6 +323,129 @@ def fit_parmigiano(data_train, config, simulated_parameters=None):
     return losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulated_parameters
 
 
+def fit_parmigiano_tau12(data_train, config, simulated_parameters=None):
+    """
+    Fit parmigiano_expression_nonlinear (joint) model using SVI.
+
+    INPUT:
+        - data_train: DataTensors for training
+        - config: configuration dictionary
+        - simulated_parameters: pre-computed from simulate_expression (optional)
+    OUTPUT:
+        - losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulated_parameters
+    """
+    logger = utils.get_logger()
+    pyro.clear_param_store()
+
+    if config.get('simulate', False) and simulated_parameters is None:
+        simulated_parameters = simulate_expression(data_train, config)
+        logger.info("Finished simulating data")
+
+    model = parmigiano_expression_nonlinear(simulated_parameters=simulated_parameters)
+
+    to_optimize = ['tau1', 'tau2']
+    if not config.get('no_filter', False):
+        to_optimize.append('threshold')
+
+    guide = AutoGuideList(model)
+
+    # ------------------------------------------------------------------
+    # Decide whether there are any non-(tau/threshold) latents to put
+    # under AutoDiagonalNormal. In some modes (e.g. burden + no_wg +
+    # no_filter) there may be none, which would cause
+    # AutoDiagonalNormal to error. We detect that and skip it.
+    # ------------------------------------------------------------------
+    blocked_model = poutine.block(model, hide=to_optimize)
+    trace = poutine.trace(blocked_model).get_trace(data_train, config)
+    has_latents = any(
+        (site["type"] == "sample") and (not site.get("is_observed", False))
+        for site in trace.nodes.values()
+    )
+
+    # Decide whether to use BRR-based warm start (requires BRR betas)
+    use_brr_init = config.get('use_brr', True) and (data_train.brr_betas is not None)
+
+    if has_latents:
+        if use_brr_init:
+            init_loc_fn = make_init_loc_fn(data_train, config)
+            guide.add(
+                AutoDiagonalNormal(
+                    blocked_model,
+                    init_loc_fn=init_loc_fn,
+                )
+            )
+        else:
+            guide.add(
+                AutoDiagonalNormal(
+                    blocked_model
+                )
+            )
+    else:
+        logger.warning(
+            "No latent variables found for AutoDiagonalNormal (after hiding tau/threshold); "
+            "using AutoDelta-only guide for tau/threshold."
+        )
+
+    # Always put tau/threshold (if present) under AutoDelta
+    guide.add(AutoDelta(poutine.block(model, expose=to_optimize)))
+
+    clip_norm = config.get('clip_norm', 10.0)
+    if HAS_CLIPPED_ADAM and config.get('use_clip_norm', True): # defualt to using clip_norm unless specified not to 
+        adam = ClippedAdam({"lr": config['lr'], "clip_norm": clip_norm})
+        logger.info(f"Using ClippedAdam with clip_norm={clip_norm}")
+    else:
+        logger.warning("ClippedAdam not available, using regular Adam.")
+        adam = pyro.optim.Adam({"lr": config['lr']})
+
+    svi = SVI(model, guide=guide, optim=adam, loss=Trace_ELBO())
+    pyro.clear_param_store()
+
+    losses = []
+    times = []
+    tau1_history = []
+    tau2_history = []
+
+    logger.info(f"Training for {config['epochs']} epochs...")
+    for epoch in tqdm(range(config['epochs'])):
+        start = time.time()
+        try:
+            loss = svi.step(data_train, config)
+        except ValueError as e:
+            if "nan" in str(e).lower() or "invalid" in str(e).lower():
+                logger.error(f"Numerical instability at epoch {epoch}: {e}")
+                logger.error("Try: reducing lr, adding clip_norm to config, or checking input data.")
+                raise
+            raise
+        if not np.isfinite(loss):
+            logger.warning(f"NaN/Inf loss at epoch {epoch}. Stopping.")
+            break
+        times.append(time.time() - start)
+        losses.append(float(loss))
+        tau1_history.append(_extract_tau_history_step(epoch, 'tau1'))
+        tau2_history.append(_extract_tau_history_step(epoch, 'tau2'))
+        if epoch % 10 == 0:
+            logger.info(f"  Epoch {epoch}: Loss = {loss:.4f}")
+
+    # --- Posterior samples ---
+    logger.info("Generating posterior samples...")
+    guide.requires_grad_(False)
+    predictive = Predictive(model, guide=guide, num_samples=config['n_posterior'])
+    with torch.no_grad():
+        samples = predictive(data_train, config)
+
+    posterior_stats = {
+        k: {'mean': v.mean(0).cpu().numpy(), 'std': v.std(0).cpu().numpy()}
+        for k, v in samples.items()
+    }
+    beta_samples = _extract_samples(samples, data_train, "beta")
+    mu_samples = _extract_samples(samples, data_train, "mu")
+
+    logger.info("Training complete!")
+    return losses, times, posterior_stats, beta_samples, mu_samples, tau1_history, tau2_history, simulated_parameters
+
+
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -444,8 +567,13 @@ def main():
     for run in range(config['refits']):
         print("\nREFIT #",run+1)
         # Fit
-        losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulations = \
-            fit_parmigiano(data_train, config)
+        if config.get('tau12', False):
+            losses, times, posterior_stats, beta_samples, mu_samples, tau1_history, tau2_history, simulations = fit_parmigiano_tau12(data_train, config)
+            tau_history = None
+        else:
+            losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulations = fit_parmigiano(data_train, config)
+            tau1_history = None
+            tau2_history = None
     
         logger.info(f"\nFinal loss: {losses[-1]:.4f}")
         logger.info(f"Avg time/epoch: {np.mean(times):.2f}s  |  Total: {np.sum(times):.2f}s")
@@ -491,6 +619,8 @@ def main():
                 train_r2=train_r2,
                 test_r2=test_r2,
                 tau_history=tau_history,
+                tau1_history=tau1_history,
+                tau2_history=tau2_history,
                 variant_ids_G=variant_ids_G,
                 variant_ids_Z=variant_ids_Z,
                 gene_indices=data_train.gene_indices,

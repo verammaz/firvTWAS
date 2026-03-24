@@ -21,6 +21,8 @@ set -- "${SCRIPT_ARGS[@]}"
 
 cd /gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src
 
+## TODO: too many command line arguments, need to simplify or use config file 
+
 # Default values
 scale_anno=False
 output_dir=seed_genes_minmax
@@ -44,6 +46,7 @@ no_wg=False
 no_rhog=False
 use_brr=True
 scale_center=True
+tau12=False
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -142,6 +145,10 @@ while [[ $# -gt 0 ]]; do
             scale_center="$2"
             shift 2
             ;;
+        --tau12|--tau12)
+            tau12="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -168,6 +175,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no_rhog, --no-rhog BOOL                Remove rho_g from model(default: False)"
             echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
             echo "  --scale_center, --scale-center BOOL      Scale expression matrix by center and scale (default: True)"
+            echo "  --tau12, --tau12 BOOL                    Use tau1 and tau2 for nonlinear annotation interaction (default: False)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -209,7 +217,8 @@ python -u parmigiano_joint.py --config $config_file \
                          --no_rhog $no_rhog \
                          --use_brr $use_brr \
                          --refits $refits \
-                         --scale_center $scale_center
+                         --scale_center $scale_center \
+                         --tau12 $tau12
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then

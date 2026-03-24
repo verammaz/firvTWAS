@@ -215,6 +215,7 @@ def fill_defaults(args, yaml_config=None):
         'refits': 1,
         'use_brr': True,
         'scale_center': True,
+        'tau12': False
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -261,6 +262,7 @@ def parse_args():
     parser.add_argument('--use_brr', type=str_to_bool, help="Use Bayesian Ridge Regression results")
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
+    parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")
