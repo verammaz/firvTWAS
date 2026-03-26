@@ -26,7 +26,7 @@ cd /gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src
 # Default values
 scale_anno=False
 output_dir=seed_genes_minmax
-config_file=config_genewise.yaml
+config_file=config_base.yaml
 gene_list=genes_list_seed.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
 annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/
@@ -216,6 +216,7 @@ python -u parmigiano_joint.py --config $config_file \
                          --no_wg $no_wg \
                          --no_rhog $no_rhog \
                          --use_brr $use_brr \
+                         --brr_results_dir $brr_results_dir \
                          --refits $refits \
                          --scale_center $scale_center \
                          --tau12 $tau12

@@ -1,4 +1,4 @@
-# Parmigiano Configuration File (Gene-by-gene format)
+# Parmigiano Configuration File 
 
 # Phenotype data
 expression_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv'
