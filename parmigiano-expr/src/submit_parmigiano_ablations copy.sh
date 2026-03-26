@@ -3,7 +3,6 @@
 # 
 # Single tau (linear)
 # BRR + T + log1p + scale_center (defualt True) 
-# BRR + T + log1p + scale_center
 # BRR + noT + log1p + scale_center
 # BRR + noT + log1p + no_wg (nowg)
 # BRR + noT + log1p + scale_center + no w_g (nowg) ablations

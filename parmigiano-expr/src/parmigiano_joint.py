@@ -330,6 +330,8 @@ def main():
         yaml_config = utils.load_yaml(args.config)
     config = utils.fill_defaults(args, yaml_config)
 
+    config.pop('chromosome', None)
+
     log_level = config.get('log_level', 'INFO')
     log_file = config.get('log_file', None)
     logger = utils.setup_logging(log_level, log_file)

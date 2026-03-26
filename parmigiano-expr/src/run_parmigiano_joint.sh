@@ -47,6 +47,7 @@ no_rhog=False
 use_brr=True
 scale_center=True
 tau12=False
+chrombpnet_dist_only=False
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -149,6 +150,10 @@ while [[ $# -gt 0 ]]; do
             tau12="$2"
             shift 2
             ;;
+        --chrombpnet_dist_only|--chrombpnet-dist-only)
+            chrombpnet_dist_only="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -176,6 +181,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
             echo "  --scale_center, --scale-center BOOL      Scale expression matrix by center and scale (default: True)"
             echo "  --tau12, --tau12 BOOL                    Use tau1 and tau2 for nonlinear annotation interaction (default: False)"
+            echo "  --chrombpnet_dist_only, --chrombpnet-dist-only BOOL    Use chrombpnet and dist_to_TSS annotations only (default: False)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -198,6 +204,13 @@ if [ "$random_genes" == "True" ]; then
     output_dir=random_genes
 fi
 
+if [ "$chrombpnet_dist_only" == "True" ]; then
+    echo "Using chrombpnet and dist_to_TSS annotations only..."
+    echo "Need raw annotations directory and tau12=True, no_filter=True... (will override)"
+    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
+    tau12=True
+    no_filter=True
+fi
 
 # scale annotation matrix
 python -u parmigiano_joint.py --config $config_file \
@@ -219,7 +232,8 @@ python -u parmigiano_joint.py --config $config_file \
                          --brr_results_dir $brr_results_dir \
                          --refits $refits \
                          --scale_center $scale_center \
-                         --tau12 $tau12
+                         --tau12 $tau12 \
+                         --chrombpnet_dist_only $chrombpnet_dist_only
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then

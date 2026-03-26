@@ -175,16 +175,23 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
     Z = Z.loc[G.columns]  # reorder Z to match G column order
 
     # Feature engineering
-    Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
-    log_cols = Z.filter(like="log_counts").columns
-    Z["chromBPnet"] = Z[log_cols].max(axis=1)
-    Z = Z.drop(columns=log_cols)
-    enformer_min = Z.filter(like="TF_delta_min").columns
-    Z["TF_delta_min"] = Z[enformer_min].max(axis=1)
-    Z = Z.drop(columns=enformer_min)
-    enformer_max = Z.filter(like="TF_delta_max").columns
-    Z["TF_delta_max"] = Z[enformer_max].max(axis=1)
-    Z = Z.drop(columns=enformer_max)
+    if config.get('chrombpnet_dist_only', False):
+        # simple model -- trying to get negative annotations
+        Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
+        keep_columns = ['chrombpnet', 'dist_to_TSS']
+        Z = Z[keep_columns]
+    
+    else: # keep all annotations 
+        Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
+        log_cols = Z.filter(like="log_counts").columns
+        Z["chromBPnet"] = Z[log_cols].max(axis=1)
+        Z = Z.drop(columns=log_cols)
+        enformer_min = Z.filter(like="TF_delta_min").columns
+        Z["TF_delta_min"] = Z[enformer_min].max(axis=1)
+        Z = Z.drop(columns=enformer_min)
+        enformer_max = Z.filter(like="TF_delta_max").columns
+        Z["TF_delta_max"] = Z[enformer_max].max(axis=1)
+        Z = Z.drop(columns=enformer_max)
 
     G, Z = utils.impute_missing(G, Z)
     logger.info(f"Loaded {G.shape[0]} individuals, {G.shape[1]} variants")
@@ -340,3 +347,51 @@ class DataTensors:
             gene_names=gene_names,
             device=device
         )
+
+# ---------------------------------------------------------------------------
+# Chromosome gene discovery
+# ---------------------------------------------------------------------------
+
+def get_chr_genes(config):
+    path = os.path.join(config['genotype_dir'], config['chromosome'])
+    genes = []
+    for i in os.listdir(path):
+        if i.endswith("_genotypes.tsv.gz"):
+            genes.append(config['chromosome'] + "/" + i.split("_")[0])
+    return genes
+
+
+# ---------------------------------------------------------------------------
+# Load pre-computed tau and threshold
+# ---------------------------------------------------------------------------
+
+def load_tau_T(config, device, Z):
+    """Load tau weights and filter threshold from a directory of per-run files.
+    Supports both linear (tau.csv, threshold.csv) and NN (tau1.csv, tau2.csv, b1.csv) modes.
+    """
+    logger = utils.get_logger()
+    path = config['tauT_path']
+
+    def load_runs(filename):
+        dfs = []
+        for iteration in os.listdir(path):
+            if "run" not in iteration: continue
+            try:
+                dfs.append(pd.read_csv(os.path.join(path, iteration, filename), index_col = 0))
+            except Exception as e:
+                print(f"Issue loading {filename} from {iteration}: {e}")
+        return pd.concat(dfs, axis=0)
+
+    if os.path.exists(os.path.join(path, "run_1", "tau_T.csv")):
+        tauT_df = load_runs("tau_T.csv")
+        threshold = torch.as_tensor(float(tauT_df['Filter Threshold'].values[0]), dtype=torch.float32, device=device)
+        if config.get('tau12', False): # nonlinear mode
+            tau1 = torch.as_tensor(tauT_df['Tau1'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
+            tau2 = torch.as_tensor(tauT_df['Tau2'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
+            return {'tau1': tau1, 'tau2': tau2, 'threshold': threshold}
+        else:
+            tau = torch.as_tensor(tauT_df['Tau'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
+            return {'tau': tau, 'threshold': threshold}
+
+    return None
+

@@ -206,19 +206,21 @@ def fill_defaults(args, yaml_config=None):
         'no_wg': False,
         'no_rhog': False,
         'skat': False,
-        'chromosome': 'chr21',
+        'chromosome': 'chr21', # not used in joint mode
         'no_filter': False,
-        'scale_anno': False,
+        'scale_anno': False, # is this used?
         'train_test': False,
         'log_level': 'INFO',
         'log_file': None,
         'refits': 1,
         'use_brr': True,
         'scale_center': True,
-        'tau12': False
+        'tau12': False,
+        'chrombpnet_dist_only': False,
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
+    # TODO: add config check -- some flags have to bet set together
 
     if yaml_config:
         defaults.update(yaml_config)
@@ -253,6 +255,7 @@ def parse_args():
     parser.add_argument('--annotation_path', type=str, help="Path to annotation matrix")
     parser.add_argument('--genotype_dir', type=str, help="Path to genotypes directory")
     parser.add_argument('--annotation_dir', type=str, help="Path to annotations directory")
+    parser.add_argument('--chrombpnet_dist_only', type=str_to_bool, help="Only use chrombpnet and dist_to_tss annotations")
     parser.add_argument('--gene_list', type=str, help="List of genes or path to file with gene list")
     parser.add_argument('--n_posterior', type=int, help="Number of posterior samples")
     parser.add_argument('--output_dir', type=str, help="Path to output directory")
