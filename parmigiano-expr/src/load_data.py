@@ -176,10 +176,14 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
 
     # Feature engineering
     if config.get('chrombpnet_dist_only', False):
+        assert config.get('annotation_dir', None) == "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/", "chrombpnet_dist_only requires raw annotations directory"
         # simple model -- trying to get negative annotations
         Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
         keep_columns = ['chrombpnet', 'dist_to_TSS']
         Z = Z[keep_columns]
+        # z score chrombpnet 
+        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()
+        # leave dist_to_TSS as is (log(abs(dist_to_TSS)))
     
     else: # keep all annotations 
         Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
