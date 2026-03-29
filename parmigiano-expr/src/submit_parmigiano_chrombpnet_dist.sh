@@ -42,7 +42,7 @@ submit_one_full() {
     local no_rhog="$3"
 
     echo "sbatch: ${output_dir} (no_wg=${no_wg} no_rhog=${no_rhog} no_filter=True tau12=True scale_center=True brr_results_dir=${BRR_RESULTS_DIR_FULL})"
-    sbatch "${RUNNER}" \
+    sbatch --time=20:00:00 --mem=200G "${RUNNER}" \
         --output_dir "${output_dir}" \
         --lr "${LR}" \
         --epochs "${EPOCHS}" \
@@ -64,7 +64,7 @@ submit_one_log1p() {
     local no_rhog="$3"
 
     echo "sbatch: ${output_dir} (no_wg=${no_wg} no_rhog=${no_rhog} no_filter=True tau12=True scale_center=False brr_results_dir=${BRR_RESULTS_DIR_LOG1P})"
-    sbatch "${RUNNER}" \
+    sbatch --time=20:00:00 --mem=200G "${RUNNER}" \
         --output_dir "${output_dir}" \
         --lr "${LR}" \
         --epochs "${EPOCHS}" \

@@ -164,8 +164,14 @@ def make_init_loc_fn(data, config, eps=1e-3):
             G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
 
             # Approximate lambda_ as in the model, but with prior means for tau/threshold
-            # lambda_ ≈ relu(Z_gene @ tau_init - threshold_init) * maf_weights_gene
-            lambda_approx = F.relu(Z_gene.matmul(tau_init) - threshold_init) * maf_weights_gene
+            
+            if config.get('tau12', False):
+                if config.get('chrombpnet_dist_only', False):
+                    lambda_approx = Z_gene.matmul(tau_init) * torch.exp(Z_gene.matmul(tau_init)) * maf_weights_gene
+                else:
+                    lambda_approx = F.relu(Z_gene.matmul(tau_init) - threshold_init) * torch.exp(Z_gene.matmul(tau_init)) * maf_weights_gene
+            else:
+                lambda_approx = F.relu(Z_gene.matmul(tau_init) - threshold_init) * maf_weights_gene
 
             # Make sure shapes match; if not, just fall back
             if beta_brr.shape[0] != lambda_approx.shape[0]:

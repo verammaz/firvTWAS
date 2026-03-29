@@ -4,10 +4,9 @@ import argparse
 import time
 import logging
 import sys
-import pyro
-import pyro.distributions as dist
 from sklearn.metrics import r2_score, mean_squared_error
 import torch
+from torch.distributions import Beta
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import numpy as np
@@ -91,7 +90,10 @@ def get_MAF_weights(G, device, b_dist=25):
         return torch.zeros_like(maf)
     
     maf = torch.clamp(maf, min=nonzero_maf.min(), max=0.5).to(device)
-    beta = dist.Beta(torch.tensor(1.0, device=device), torch.tensor(float(b_dist), device=device))
+    beta = Beta(
+        torch.tensor(1.0, device=device),
+        torch.tensor(float(b_dist), device=device),
+    )
     return torch.exp(beta.log_prob(maf))
 
 
@@ -217,6 +219,7 @@ def fill_defaults(args, yaml_config=None):
         'scale_center': True,
         'tau12': False,
         'chrombpnet_dist_only': False,
+        'annotation_exp_clip': 8.0,
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -266,6 +269,11 @@ def parse_args():
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
     parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
+    parser.add_argument(
+        '--annotation_exp_clip',
+        type=float,
+        help="Clamp |Z·τ₂| before exp() in nonlinear λ (default: 8.0)",
+    )
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")
