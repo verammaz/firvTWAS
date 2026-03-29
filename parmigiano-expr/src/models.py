@@ -11,6 +11,37 @@ from utils import get_logger
 import load_data
 
 
+def annotation_lambda(
+    Z_gene,
+    maf_weights_gene,
+    config,
+    mode: str,
+    threshold,
+    tau=None,
+    tau1=None,
+    tau2=None,
+):
+    """
+    Per-variant λ in the joint / per-gene / simulate paths.
+
+    Nonlinear:
+      - default: relu(Z·τ₁ − T) * exp(Z·τ₂) * MAF
+      - chrombpnet_dist_only: (Z·τ₁) * exp(Z·τ₂) * MAF  (signed; T unused in λ)
+
+    Linear: relu(Z·τ − T) * MAF
+    """
+    if mode == "nonlinear":
+        assert tau1 is not None and tau2 is not None
+        lin1 = Z_gene.matmul(tau1)
+        lin2 = Z_gene.matmul(tau2)
+        mod = torch.exp(lin2)
+        if config.get("chrombpnet_dist_only", False):
+            return lin1 * mod * maf_weights_gene
+        return F.relu(lin1 - threshold) * mod * maf_weights_gene
+
+    assert tau is not None
+    return F.relu(Z_gene.matmul(tau) - threshold) * maf_weights_gene
+
 
 def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     logger = get_logger()
@@ -23,11 +54,15 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     if (not config.get('burden', False)) and (not config.get('skat', False)):
         rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
     
-    if not config.get('no_filter', False):
+    # chrombpnet_dist_only: λ uses signed Z·τ₁ (no ReLU gate); do not sample a useless threshold
+    learn_threshold = (not config.get("no_filter", False)) and (
+        not config.get("chrombpnet_dist_only", False)
+    )
+    if learn_threshold:
         threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device)
     else:
-        threshold = torch.as_tensor(0, dtype = torch.float32).to(data.device)
-        pyro.deterministic(f"threshold", threshold)
+        threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
+        pyro.deterministic("threshold", threshold)
 
     # prior for taus is uniform over annotations
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
@@ -43,12 +78,24 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
         G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
         num_indivs = G_gene.shape[0]
         if mode == "nonlinear":
-            if config.get('chrombpnet_dist_only', False): # no ReLU -- trying to get negative annotations
-                lambda_ = (Z_gene.matmul(tau1)) * torch.exp(Z_gene.matmul(tau2)) * maf_weights_gene
-            else:
-                lambda_ = F.relu((Z_gene.matmul(tau1)) - threshold) * torch.exp(Z_gene.matmul(tau2)) * maf_weights_gene
+            lambda_ = annotation_lambda(
+                Z_gene,
+                maf_weights_gene,
+                config,
+                "nonlinear",
+                threshold,
+                tau1=tau1,
+                tau2=tau2,
+            )
         else:
-            lambda_ = F.relu((Z_gene.matmul(tau)) - threshold) * maf_weights_gene
+            lambda_ = annotation_lambda(
+                Z_gene,
+                maf_weights_gene,
+                config,
+                "linear",
+                threshold,
+                tau=tau,
+            )
 
         if config.get('no_rhog', False):
             mu = w_g[gene_idx] * lambda_ # if no_wg: wg=1, sigma=mu^2
@@ -169,9 +216,24 @@ class ParmigianoExpPerGene(PyroModule):
 
             # lambda_ does NOT include w_g — applied explicitly per branch, matching joint model
             if mode == "nonlinear":
-                lambda_ = F.relu((Z_gene.matmul(self.data.tau1)) - self.data.threshold) * torch.exp(Z_gene.matmul(self.data.tau2)) * maf_weights_gene
+                lambda_ = annotation_lambda(
+                    Z_gene,
+                    maf_weights_gene,
+                    self.config,
+                    "nonlinear",
+                    self.data.threshold,
+                    tau1=self.data.tau1,
+                    tau2=self.data.tau2,
+                )
             else:
-                lambda_ = F.relu((Z_gene.matmul(self.data.tau)) - self.data.threshold) * maf_weights_gene
+                lambda_ = annotation_lambda(
+                    Z_gene,
+                    maf_weights_gene,
+                    self.config,
+                    "linear",
+                    self.data.threshold,
+                    tau=self.data.tau,
+                )
 
             if self.config.get('no_rhog', False):
                 mu = w_g[gene_idx] * lambda_
@@ -182,10 +244,10 @@ class ParmigianoExpPerGene(PyroModule):
                 if self.config.get('burden', False):
                     beta = w_g[gene_idx] * lambda_
                 elif self.config.get('skat', False):
-                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
+                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(self.data.device)
                     beta = w_g[gene_idx] * lambda_ * Z_norm
                 else:
-                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
+                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(self.data.device)
                     beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_ + (1 - rho_g[gene_idx]) * w_g[gene_idx] * lambda_ * Z_norm
 
         
@@ -228,20 +290,24 @@ def simulate_expression(data, config, mode="linear"):
         rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
         simulated_parameters['rho_g'] = rho_g
 
-    if not config.get('no_filter', False):
+    learn_threshold = (not config.get("no_filter", False)) and (
+        not config.get("chrombpnet_dist_only", False)
+    )
+    if learn_threshold:
         threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device)
     else:
         threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
         pyro.deterministic("threshold", threshold)
 
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
-    tau = pyro.sample('tau', dist.Dirichlet(prior)).to(data.device)
     if mode == "nonlinear":
-        tau2 = pyro.sample('tau2', dist.Dirichlet(prior)).to(data.device)
-        simulated_parameters['tau1'] = tau
-        simulated_parameters['tau2'] = tau2
+        tau1 = pyro.sample("tau1", dist.Dirichlet(prior)).to(data.device)
+        tau2 = pyro.sample("tau2", dist.Dirichlet(prior)).to(data.device)
+        simulated_parameters["tau1"] = tau1
+        simulated_parameters["tau2"] = tau2
     else:
-        simulated_parameters['tau'] = tau
+        tau = pyro.sample("tau", dist.Dirichlet(prior)).to(data.device)
+        simulated_parameters["tau"] = tau
 
     simulated_parameters['w_g'] = w_g
     simulated_parameters['threshold'] = threshold
@@ -252,9 +318,24 @@ def simulate_expression(data, config, mode="linear"):
         G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
         num_indivs = G_gene.shape[0]
         if mode == "nonlinear":
-            lambda_ = F.relu((Z_gene.matmul(tau)) - threshold) * torch.exp(Z_gene.matmul(tau2)) * maf_weights_gene
+            lambda_ = annotation_lambda(
+                Z_gene,
+                maf_weights_gene,
+                config,
+                "nonlinear",
+                threshold,
+                tau1=tau1,
+                tau2=tau2,
+            )
         else:
-            lambda_ = F.relu((Z_gene.matmul(tau)) - threshold) * maf_weights_gene
+            lambda_ = annotation_lambda(
+                Z_gene,
+                maf_weights_gene,
+                config,
+                "linear",
+                threshold,
+                tau=tau,
+            )
         mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ if (not config.get('burden', False)) and (not config.get('skat', False)) else lambda_ * w_g[gene_idx]
         if config.get('burden', False):
             beta = w_g[gene_idx] * lambda_

@@ -19,7 +19,12 @@ import pandas as pd
 import utils
 import load_data
 from save_outputs import save_results
-from models import ParmigianoExpJoint, ParmigianoExpJointNonlinear, simulate_expression
+from models import (
+    ParmigianoExpJoint,
+    ParmigianoExpJointNonlinear,
+    simulate_expression,
+    annotation_lambda,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +106,6 @@ def calculate_r2(data, beta_samples, gene_names):
 # Main fit function
 # ---------------------------------------------------------------------------
 
-import torch
-import torch.nn.functional as F
-
 def make_init_loc_fn(data, config, eps=1e-3):
     """
     Build an init_loc_fn(site) that warm-starts from BRR betas.
@@ -163,15 +165,26 @@ def make_init_loc_fn(data, config, eps=1e-3):
             # Get per-gene annotations and weights
             G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
 
-            # Approximate lambda_ as in the model, but with prior means for tau/threshold
-            
-            if config.get('tau12', False):
-                if config.get('chrombpnet_dist_only', False):
-                    lambda_approx = Z_gene.matmul(tau_init) * torch.exp(Z_gene.matmul(tau_init)) * maf_weights_gene
-                else:
-                    lambda_approx = F.relu(Z_gene.matmul(tau_init) - threshold_init) * torch.exp(Z_gene.matmul(tau_init)) * maf_weights_gene
+            # Match generative λ (nonlinear + chrombpnet_dist_only vs default); τ₁,τ₂ both ~ uniform for init
+            if config.get("tau12", False):
+                lambda_approx = annotation_lambda(
+                    Z_gene,
+                    maf_weights_gene,
+                    config,
+                    "nonlinear",
+                    threshold_init,
+                    tau1=tau_init,
+                    tau2=tau_init,
+                )
             else:
-                lambda_approx = F.relu(Z_gene.matmul(tau_init) - threshold_init) * maf_weights_gene
+                lambda_approx = annotation_lambda(
+                    Z_gene,
+                    maf_weights_gene,
+                    config,
+                    "linear",
+                    threshold_init,
+                    tau=tau_init,
+                )
 
             # Make sure shapes match; if not, just fall back
             if beta_brr.shape[0] != lambda_approx.shape[0]:
@@ -206,9 +219,16 @@ def setup_model(data_train, config, mode="linear", simulated_parameters=None):
         to_optimize = ['tau']
         logger.info("Using linear model")
     
-    if not config.get('no_filter', False):
-        to_optimize.append('threshold')
+    learn_threshold = (not config.get("no_filter", False)) and (
+        not config.get("chrombpnet_dist_only", False)
+    )
+    if learn_threshold:
+        to_optimize.append("threshold")
         logger.info("Optimizing threshold")
+    elif config.get("chrombpnet_dist_only", False) and not config.get("no_filter", False):
+        logger.info(
+            "chrombpnet_dist_only: threshold not in λ; fixed at 0 (not optimized)"
+        )
 
     guide = AutoGuideList(model)
 

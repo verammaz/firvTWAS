@@ -219,7 +219,6 @@ def fill_defaults(args, yaml_config=None):
         'scale_center': True,
         'tau12': False,
         'chrombpnet_dist_only': False,
-        'annotation_exp_clip': 8.0,
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -269,11 +268,6 @@ def parse_args():
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
     parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
-    parser.add_argument(
-        '--annotation_exp_clip',
-        type=float,
-        help="Clamp |Z·τ₂| before exp() in nonlinear λ (default: 8.0)",
-    )
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")
