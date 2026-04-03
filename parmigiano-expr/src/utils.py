@@ -218,6 +218,7 @@ def fill_defaults(args, yaml_config=None):
         'use_brr': True,
         'scale_center': True,
         'tau12': False,
+        'tau1_normal_prior': False,
         'tau2_normal_prior': False,
         'chrombpnet_dist_only': False,
         'chrombpnet_dist_only_cfg_num': 1,
@@ -271,6 +272,7 @@ def parse_args():
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
     parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
+    parser.add_argument('--tau1_normal_prior', type=str_to_bool, help="Use normal prior for tau1")
     parser.add_argument('--tau2_normal_prior', type=str_to_bool, help="Use normal prior for tau2")
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")

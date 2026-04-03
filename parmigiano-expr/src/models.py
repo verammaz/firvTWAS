@@ -68,9 +68,15 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
 
     if mode == "nonlinear": # try different priors for tau1 and tau2
-        tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
-        if config.get('tau2_normal_prior', False):
+        if config.get('tau1_normal_prior', False):
             # One coefficient per annotation (same shape as Dirichlet tau2)
+            tau1 = pyro.sample(
+                "tau1",
+                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
+            ).to(data.device)
+        else:
+            tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
+        if config.get('tau2_normal_prior', False):
             tau2 = pyro.sample(
                 "tau2",
                 dist.Normal(0, 1).expand([data.num_anno]).to_event(1),

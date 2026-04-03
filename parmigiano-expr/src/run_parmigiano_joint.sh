@@ -47,6 +47,7 @@ no_rhog=False
 use_brr=True
 scale_center=True
 tau12=False
+tau1_normal_prior=False
 tau2_normal_prior=False
 chrombpnet_dist_only=False
 chrombpnet_dist_only_cfg_num=1
@@ -152,6 +153,10 @@ while [[ $# -gt 0 ]]; do
             tau12="$2"
             shift 2
             ;;
+        --tau1_normal_prior|--tau1-normal-prior)
+            tau1_normal_prior="$2"
+            shift 2
+            ;;
         --tau2_normal_prior|--tau2-normal-prior)
             tau2_normal_prior="$2"
             shift 2
@@ -191,6 +196,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
             echo "  --scale_center, --scale-center BOOL      Scale expression matrix by center and scale (default: True)"
             echo "  --tau12, --tau12 BOOL                    Use tau1 and tau2 for nonlinear annotation interaction (default: False)"
+            echo "  --tau1_normal_prior, --tau1-normal-prior BOOL    Use normal prior for tau1 (default: False)"
             echo "  --tau2_normal_prior, --tau2-normal-prior BOOL    Use normal prior for tau2 (default: False)"
             echo "  --chrombpnet_dist_only, --chrombpnet-dist-only BOOL    Use chrombpnet and dist_to_TSS annotations only (default: False)"
             echo "  --chrombpnet_dist_only_cfg_num, --chrombpnet-dist-only-cfg-num INT    Configuration number for chrombpnet and dist_to_TSS annotations only (default: 1)"
@@ -236,10 +242,22 @@ if [ "$chrombpnet_dist_only" == "True" ]; then
     no_filter=True
 fi
 
-if [ "$tau2_normal_prior" == "True" ]; then
+if [ "$tau2_normal_prior" == "True" ] && [ "$tau12" == "False" ]; then
     echo "Using normal prior for tau2..."
-    echo "Require mode nonlinear mode (overriding if tau12=False)..."
+    echo "Require mode nonlinear mode (overriding tau12=False)..."
     tau12=True
+fi
+
+if [ "$tau1_normal_prior" == "True" ] && [ "$tau12" == "False" ]; then
+    echo "Using normal prior for tau1..."
+    echo "Require mode nonlinear mode (overriding tau12=False)..."
+    tau12=True
+fi
+
+# another check if experiments already run / is running --> exit if so
+if [ -d "$output_dir" ]; then
+    echo "Output directory $output_dir already exists. Exiting..."
+    exit 1
 fi
 
 # scale annotation matrix
@@ -263,6 +281,7 @@ python -u parmigiano_joint.py --config $config_file \
                          --refits $refits \
                          --scale_center $scale_center \
                          --tau12 $tau12 \
+                         --tau1_normal_prior $tau1_normal_prior \
                          --tau2_normal_prior $tau2_normal_prior \
                          --chrombpnet_dist_only $chrombpnet_dist_only \
                          --chrombpnet_dist_only_cfg_num $chrombpnet_dist_only_cfg_num \

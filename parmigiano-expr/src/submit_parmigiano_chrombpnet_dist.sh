@@ -51,7 +51,8 @@ submit_one_full() {
     local no_wg="$2"
     local no_rhog="$3"
     local burden="$4"
-    local tau2_normal_prior="$5"
+    local tau1_normal_prior="$5"
+    local tau2_normal_prior="$6"
 
     # check if output_dir exitsts -- already ran or currently running --> skip
     if [ -d "${output_dir}" ]; then
@@ -74,6 +75,7 @@ submit_one_full() {
         --scale_center True \
         --tau12 "${TAU12}" \
         --tau2_normal_prior "${tau2_normal_prior}" \
+        --tau1_normal_prior "${tau1_normal_prior}" \
         --gene_list "${GENE_LIST_FULL}" \
         --chrombpnet_dist_only True \
         --chrombpnet_dist_only_cfg_num "${CONFIG_NUM}"
@@ -84,7 +86,8 @@ submit_one_log1p() {
     local no_wg="$2"
     local no_rhog="$3"
     local burden="$4"
-    local tau2_normal_prior="$5"
+    local tau1_normal_prior="$5"
+    local tau2_normal_prior="$6"
 
     # check if output_dir exitsts -- already ran or currently running --> skip
     if [ -d "${output_dir}" ]; then
@@ -106,6 +109,7 @@ submit_one_log1p() {
         --brr_results_dir "${BRR_RESULTS_DIR_LOG1P}" \
         --scale_center False \
         --tau12 "${TAU12}" \
+        --tau1_normal_prior "${tau1_normal_prior}" \
         --gene_list "${GENE_LIST_LOG1P}" \
         --chrombpnet_dist_only True \
         --chrombpnet_dist_only_cfg_num "${CONFIG_NUM}" \
@@ -116,28 +120,32 @@ submit_one_log1p() {
 
 
 ## log1p + scale_center
-submit_one_full "${PREFIX}_full/nowg" True False False False
-submit_one_full "${PREFIX}_full/norhog" False True False False
-submit_one_full "${PREFIX}_full/nowg_norhog" True True False False
-submit_one_full "${PREFIX}_full/burden" False False True False
+submit_one_full "${PREFIX}_full/nowg" True False False False False
+submit_one_full "${PREFIX}_full/norhog" False True False False False
+submit_one_full "${PREFIX}_full/nowg_norhog" True True False False False
+submit_one_full "${PREFIX}_full/burden" False False True False False
 
 if [ "$TAU12" == "True" ]; then # if nonlinear mode, try dirichlet and normal priors for tau2
-    submit_one_full "${PREFIX}_full/full/tau12_dir_prior" False False False False # full model (dirichlet prior for tau1 amd tau2)
-    submit_one_full "${PREFIX}_full/full/tau2_norm_prior" False False False True
+    submit_one_full "${PREFIX}_full/full/tau12_dir_prior" False False False False False # full model (dirichlet prior for tau1 amd tau2)
+    submit_one_full "${PREFIX}_full/full/tau2_norm_prior" False False False False True # full model (normal prior for tau2, dirichlet prior for tau1)
+    submit_one_full "${PREFIX}_full/full/tau1_norm_prior" False False False True False # full model (normal prior for tau1, dirichlet prior for tau2)
+    submit_one_full "${PREFIX}_full/full/tau12_norm_prior" False False False True True # full model (normal prior for tau1 and tau2)
 else # if linear mode, keep dirichlet prior for tau
-    submit_one_full "${PREFIX}_full/full" False False False False # full model (default priors)
+    submit_one_full "${PREFIX}_full/full" False False False False False # full model (default priors)
 fi
 
 
 # log1p only
-submit_one_log1p "${PREFIX}_log1p/nowg" True False False False
-submit_one_log1p "${PREFIX}_log1p/norhog" False True False False
-submit_one_log1p "${PREFIX}_log1p/nowg_norhog" True True False False
-submit_one_log1p "${PREFIX}_log1p/burden" False False True False
+submit_one_log1p "${PREFIX}_log1p/nowg" True False False False False
+submit_one_log1p "${PREFIX}_log1p/norhog" False True False False False
+submit_one_log1p "${PREFIX}_log1p/nowg_norhog" True True False False False
+submit_one_log1p "${PREFIX}_log1p/burden" False False True False False
 
 if [ "$TAU12" == "True" ]; then
-    submit_one_log1p "${PREFIX}_log1p/full/tau12_dir_prior" False False False False # full model (dirichlet prior for tau1 amd tau2)
-    submit_one_log1p "${PREFIX}_log1p/full/tau2_norm_prior" False False False True # full model (normal prior for tau2)
+    submit_one_log1p "${PREFIX}_log1p/full/tau12_dir_prior" False False False False False # full model (dirichlet prior for tau1 amd tau2)
+    submit_one_log1p "${PREFIX}_log1p/full/tau2_norm_prior" False False False False True # full model (normal prior for tau2, dirichlet prior for tau1)
+    submit_one_log1p "${PREFIX}_log1p/full/tau1_norm_prior" False False False True False # full model (normal prior for tau1, dirichlet prior for tau2)
+    submit_one_log1p "${PREFIX}_log1p/full/tau12_norm_prior" False False False True True # full model (normal prior for tau1 and tau2)
 else # if linear mode, only try dirichlet prior for tau
-    submit_one_log1p "${PREFIX}_log1p/full" False False False False # full model (default priors)
+    submit_one_log1p "${PREFIX}_log1p/full" False False False False False # full model (default priors)
 fi
