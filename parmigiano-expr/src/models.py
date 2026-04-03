@@ -67,10 +67,16 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     # prior for taus is uniform over annotations
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
 
-    if mode == "nonlinear":
+    if mode == "nonlinear": # try different priors for tau1 and tau2
         tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
-        tau2 = pyro.sample('tau2', dist.Dirichlet(prior)).to(data.device)
-    
+        if config.get('tau2_normal_prior', False):
+            # One coefficient per annotation (same shape as Dirichlet tau2)
+            tau2 = pyro.sample(
+                "tau2",
+                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
+            ).to(data.device)
+        else:
+            tau2 = pyro.sample('tau2', dist.Dirichlet(prior)).to(data.device)
     else:
         tau = pyro.sample('tau', dist.Dirichlet(prior)).to(data.device)
 
@@ -100,18 +106,26 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
         if config.get('no_rhog', False):
             mu = w_g[gene_idx] * lambda_ # if no_wg: wg=1, sigma=mu^2
             Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-            beta = mu + mu * Z_norm #beta = mu + \sqrt{sigma} * Z_norm
+            beta = mu + torch.abs(mu) * Z_norm  # beta = mu + sqrt(sigma) * Z_norm; torch.abs (not np) for grad/CUDA
+            # try sigma=1 
+            # beta = mu + Z_norm
         else:
             mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ if (not config.get('burden', False)) and (not config.get('skat', False)) else lambda_ * w_g[gene_idx]
             if config.get('burden', False): #rho_g=1 --> sigma=0 (no variance, so beta=mu)
-                beta = w_g[gene_idx]* lambda_ # beta=mu
+                beta = w_g[gene_idx]* lambda_ #beta=mu
             elif config.get('skat', False): #rho_g=0 --> mu=0
                 Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-                beta = w_g[gene_idx]* lambda_ * Z_norm #beta = \sqrt{sigma} * Z_norm
+                beta = torch.abs(w_g[gene_idx] * lambda_) * Z_norm  # sqrt(sigma) * Z_norm
+                # try sigma=1 
+                # beta = Z_norm
             else: 
                 Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-                beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_  + (1 - rho_g[gene_idx]) * w_g[gene_idx]* lambda_ * Z_norm
-
+                beta = (
+                    rho_g[gene_idx] * w_g[gene_idx] * lambda_
+                    + (1 - rho_g[gene_idx]) * torch.abs(w_g[gene_idx] * lambda_) * Z_norm
+                )
+                # try sigma=1 
+                #beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_ + Z_norm
 
         pyro.deterministic(f"mu_{gene_name}", mu)            
         pyro.deterministic(f"beta_{gene_name}", beta)
@@ -302,7 +316,13 @@ def simulate_expression(data, config, mode="linear"):
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
     if mode == "nonlinear":
         tau1 = pyro.sample("tau1", dist.Dirichlet(prior)).to(data.device)
-        tau2 = pyro.sample("tau2", dist.Dirichlet(prior)).to(data.device)
+        if config.get("tau2_normal_prior", False):
+            tau2 = pyro.sample(
+                "tau2",
+                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
+            ).to(data.device)
+        else:
+            tau2 = pyro.sample("tau2", dist.Dirichlet(prior)).to(data.device)
         simulated_parameters["tau1"] = tau1
         simulated_parameters["tau2"] = tau2
     else:

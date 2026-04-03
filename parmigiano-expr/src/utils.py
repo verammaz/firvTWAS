@@ -218,7 +218,9 @@ def fill_defaults(args, yaml_config=None):
         'use_brr': True,
         'scale_center': True,
         'tau12': False,
+        'tau2_normal_prior': False,
         'chrombpnet_dist_only': False,
+        'chrombpnet_dist_only_cfg_num': 1,
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -258,6 +260,7 @@ def parse_args():
     parser.add_argument('--genotype_dir', type=str, help="Path to genotypes directory")
     parser.add_argument('--annotation_dir', type=str, help="Path to annotations directory")
     parser.add_argument('--chrombpnet_dist_only', type=str_to_bool, help="Only use chrombpnet and dist_to_tss annotations")
+    parser.add_argument('--chrombpnet_dist_only_cfg_num', type=int, help="Configuration number for chrombpnet and dist_to_tss annotations only")
     parser.add_argument('--gene_list', type=str, help="List of genes or path to file with gene list")
     parser.add_argument('--n_posterior', type=int, help="Number of posterior samples")
     parser.add_argument('--output_dir', type=str, help="Path to output directory")
@@ -268,6 +271,7 @@ def parse_args():
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
     parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
+    parser.add_argument('--tau2_normal_prior', type=str_to_bool, help="Use normal prior for tau2")
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")

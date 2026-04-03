@@ -67,6 +67,48 @@ def load_residualized_covariates(config, device):
     return covariates_scaled, residualized_Y, train_idx, test_idx
 
 
+
+# simple model -- trying to get negative annotations
+def process_chrombpnet_dist_only(Z, config, logger):
+    """
+    Process chrombpnet and dist_to_TSS annotations for chrombpnet_dist_only mode.
+    """
+
+    logger.info(f"Keeping only chrombpnet and dist_to_TSS annotations...")
+    logger.info(f"Taking mean of chrombpnet annotations...")
+    Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
+    keep_columns = ['chrombpnet', 'dist_to_TSS']
+    Z = Z[keep_columns]
+
+    ANNOTATIONS_RAW = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/"
+    ANNOTATIONS_MINMAX = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/"
+
+    if config.get('chrombpnet_dist_only_cfg_num', 1) == 1:
+        assert config.get('annotation_dir', None) == ANNOTATIONS_RAW, "chrombpnet_dist_only_cfg_num 1 requires raw annotations directory"
+        logger.info(f"Z-scoring chrombpnet...")
+        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
+        logger.info(f"Clipping chrombpnet at 10, keeping sign...")
+        Z['chrombpnet'] = np.clip(Z['chrombpnet'], -10, 10)
+        logger.info(f"Clipping dist_to_TSS at 0...")
+        Z['dist_to_TSS'] = Z['dist_to_TSS'].clip(lower=0)
+    elif config.get('chrombpnet_dist_only_cfg_num', 1) == 2:
+        assert config.get('annotation_dir', None) == ANNOTATIONS_RAW, "chrombpnet_dist_only_cfg_num 2 requires raw annotations directory"
+        logger.info(f"Z-scoring chrombpnet...")
+        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
+        logger.info(f"Clipping chrombpnet at 10, keeping sign...")
+        Z['chrombpnet'] = np.clip(Z['chrombpnet'], -10, 10)
+        logger.info(f"Taking 1/dist_to_TSS and minmax scaling...")
+        Z['dist_to_TSS'] = 1/Z['dist_to_TSS']
+        Z['dist_to_TSS'] = (Z['dist_to_TSS'] - Z['dist_to_TSS'].min()) / (Z['dist_to_TSS'].max() - Z['dist_to_TSS'].min())
+    elif config.get('chrombpnet_dist_only_cfg_num', 1) == 3:
+        assert config.get('annotation_dir', None) == ANNOTATIONS_MINMAX, "chrombpnet_dist_only_cfg_num 3 requires minmax scaled annotations directory"
+        # already loaded minmax scaled annotations
+    else:
+        raise ValueError(f"chrombpnet_dist_only_cfg_num must be 1, 2, or 3, got {config.get('chrombpnet_dist_only_cfg_num', 1)}")
+    
+    return Z
+        
+
 def load_genes(config, genotype_dir=None, annotation_dir=None):
     """
     Load genotype and annotation matrices.
@@ -175,25 +217,24 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
     Z = Z.loc[G.columns]  # reorder Z to match G column order
 
     # Feature engineering
-    if config.get('chrombpnet_dist_only', False):
-        assert config.get('annotation_dir', None) == "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/", "chrombpnet_dist_only requires raw annotations directory"
-        # simple model -- trying to get negative annotations
-        Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
-        keep_columns = ['chrombpnet', 'dist_to_TSS']
-        Z = Z[keep_columns]
-        # z score chrombpnet 
-        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()
-        # leave dist_to_TSS as is (log(abs(dist_to_TSS)))
+    logger.info(f"Feature engineering for annotations...")
+    if config.get('chrombpnet_dist_only', False): # only two annotations (chrombpnet and dist_to_TSS)
+        Z = process_chrombpnet_dist_only(Z, config, logger)
+
     
     else: # keep all annotations 
+        logger.info(f"Dropping promoter_3000 and promoter_2000 annotations...")
         Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
         log_cols = Z.filter(like="log_counts").columns
+        logger.info(f"Taking max of chrombpnet og_counts annotations...")
         Z["chromBPnet"] = Z[log_cols].max(axis=1)
         Z = Z.drop(columns=log_cols)
         enformer_min = Z.filter(like="TF_delta_min").columns
+        logger.info(f"Taking max of TF_delta_min annotations...")
         Z["TF_delta_min"] = Z[enformer_min].max(axis=1)
         Z = Z.drop(columns=enformer_min)
         enformer_max = Z.filter(like="TF_delta_max").columns
+        logger.info(f"Taking max of TF_delta_max annotations...")
         Z["TF_delta_max"] = Z[enformer_max].max(axis=1)
         Z = Z.drop(columns=enformer_max)
 
@@ -202,6 +243,95 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
     logger.info(f"Annotation matrix: {Z.shape[1]} annotations per variant")
 
     return G, Z, variant_ids_G, variant_ids_Z
+
+
+def load_annotations_only(config, annotation_dir=None):
+    """
+    Load only the variant × annotation matrix Z (no genotype matrix G, no expression).
+
+    Use for low-memory diagnostics (e.g. Z·τ, exp(Z·τ₂)) where genotypes are not needed.
+    Mirrors `load_genes` annotation I/O and feature engineering, but skips reading genotype files.
+
+    Does not apply BRR variant filtering (that requires G columns).
+
+    Returns
+    -------
+    Z : pd.DataFrame
+    gene_indices : dict
+    gene_names : list
+    variant_ids_Z : list
+    """
+    logger = get_logger()
+    if annotation_dir is None:
+        annotation_dir = config.get("annotation_dir")
+    if annotation_dir is None:
+        raise ValueError("annotation_dir required for load_annotations_only")
+
+    variant_ids_Z = []
+    Z_list = []
+    gene_indices = {}
+    gene_names = []
+    cursor = 0
+
+    for gene in tqdm(config["genes"]):
+        try:
+            z_path = os.path.join(annotation_dir, f"{gene}_annotations.tsv.gz")
+            z = pd.read_csv(z_path, sep="\t", index_col=0)
+            if z.index.name == "chr":
+                z = z.reset_index()
+                z.index = z["chr"] + ":" + z["pos"].astype(str)
+                z.index.name = "variant_id"
+            z.index.name = "variant_id"
+
+            variant_ids_Z.extend(z.index.tolist())
+            z.index = [f"{gene}_{idx}" for idx in z.index]
+            Z_list.append(z)
+            nvar = len(z)
+            gene_indices[gene] = (cursor, cursor + nvar)
+            cursor += nvar
+            gene_names.append(gene)
+        except Exception as e:
+            logger.warning(f"Error loading annotations for gene {gene}: {e}. Skipping.")
+            continue
+
+    if not Z_list:
+        raise ValueError("No annotation data loaded (empty gene list or all genes failed).")
+
+    Z = pd.concat(Z_list, axis=0)
+
+    if Z.index.duplicated().sum() > 0:
+        logger.warning(f"Z has {Z.index.duplicated().sum()} duplicate indices before cleaning")
+
+    Z.index = (Z.index.str.split("_").str[0:2].str.join("_")).str.split("/").str[-1]
+    logger.info(f"Annotation-only matrix: {Z.shape[0]} variants × {Z.shape[1]} features")
+
+    # no processing of annotations -- done by caller if needed
+
+    if Z.isnull().any().any():
+        n_missing_z = Z.isnull().sum().sum()
+        Z = Z.fillna(0)
+        logger.info(f"Imputed {n_missing_z} missing annotation values with zeros")
+
+    logger.info(f"Annotation matrix (only): {Z.shape[1]} annotations per variant")
+    return Z, gene_indices, gene_names, variant_ids_Z
+
+
+@dataclass
+class AnnotationTensors:
+    """
+    Minimal container for per-gene Z slices (no G, Y, or MAF). For memory-light diagnostics.
+    """
+
+    Z: torch.Tensor
+    gene_indices: dict
+    gene_names: list
+    device: torch.device
+
+    def get_gene_data(self, gene_name):
+        start_idx, end_idx = self.gene_indices[gene_name]
+        Z_gene = self.Z[start_idx:end_idx, :]
+        empty = torch.zeros(0, dtype=torch.float32, device=self.device)
+        return empty, Z_gene, empty
 
 
 def load_brr_results(config):

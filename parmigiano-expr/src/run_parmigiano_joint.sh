@@ -4,7 +4,7 @@
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.err
 #SBATCH --time=10:00:00
-#SBATCH --mem=200G
+#SBATCH --mem=80G  # 200 genes using max ~60GB RAM
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=cpu
 
@@ -47,7 +47,9 @@ no_rhog=False
 use_brr=True
 scale_center=True
 tau12=False
+tau2_normal_prior=False
 chrombpnet_dist_only=False
+chrombpnet_dist_only_cfg_num=1
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -150,8 +152,16 @@ while [[ $# -gt 0 ]]; do
             tau12="$2"
             shift 2
             ;;
+        --tau2_normal_prior|--tau2-normal-prior)
+            tau2_normal_prior="$2"
+            shift 2
+            ;;
         --chrombpnet_dist_only|--chrombpnet-dist-only)
             chrombpnet_dist_only="$2"
+            shift 2
+            ;;
+        --chrombpnet_dist_only_cfg_num|--chrombpnet-dist-only-cfg-num)
+            chrombpnet_dist_only_cfg_num="$2"
             shift 2
             ;;
         -h|--help)
@@ -181,7 +191,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --use_brr, --use-brr BOOL                Use BRR results(default: True)"
             echo "  --scale_center, --scale-center BOOL      Scale expression matrix by center and scale (default: True)"
             echo "  --tau12, --tau12 BOOL                    Use tau1 and tau2 for nonlinear annotation interaction (default: False)"
+            echo "  --tau2_normal_prior, --tau2-normal-prior BOOL    Use normal prior for tau2 (default: False)"
             echo "  --chrombpnet_dist_only, --chrombpnet-dist-only BOOL    Use chrombpnet and dist_to_TSS annotations only (default: False)"
+            echo "  --chrombpnet_dist_only_cfg_num, --chrombpnet-dist-only-cfg-num INT    Configuration number for chrombpnet and dist_to_TSS annotations only (default: 1)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -205,11 +217,29 @@ if [ "$random_genes" == "True" ]; then
 fi
 
 if [ "$chrombpnet_dist_only" == "True" ]; then
-    echo "Using chrombpnet and dist_to_TSS annotations only..."
-    echo "Need raw annotations directory and tau12=True, no_filter=True... (will override)"
-    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
-    tau12=True
+    echo "Using chrombpnet and dist_to_TSS annotations only (config ${chrombpnet_dist_only_cfg_num})..."
+    case "$chrombpnet_dist_only_cfg_num" in
+        1|2)
+            echo "Need raw annotations directory... (will override)"
+            annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
+            ;;
+        3)
+            echo "Need raw annotations directory... (will override)"
+            annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/
+            ;;
+        *)
+            echo "Invalid --chrombpnet_dist_only_cfg_num: $chrombpnet_dist_only_cfg_num (expected 1, 2, or 3)"
+            exit 1
+            ;;
+    esac
+    echo "Setting no_filter=True..."
     no_filter=True
+fi
+
+if [ "$tau2_normal_prior" == "True" ]; then
+    echo "Using normal prior for tau2..."
+    echo "Require mode nonlinear mode (overriding if tau12=False)..."
+    tau12=True
 fi
 
 # scale annotation matrix
@@ -233,7 +263,10 @@ python -u parmigiano_joint.py --config $config_file \
                          --refits $refits \
                          --scale_center $scale_center \
                          --tau12 $tau12 \
-                         --chrombpnet_dist_only $chrombpnet_dist_only
+                         --tau2_normal_prior $tau2_normal_prior \
+                         --chrombpnet_dist_only $chrombpnet_dist_only \
+                         --chrombpnet_dist_only_cfg_num $chrombpnet_dist_only_cfg_num \
+                         --burden $burden
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then
