@@ -222,6 +222,7 @@ def fill_defaults(args, yaml_config=None):
         'tau2_normal_prior': False,
         'chrombpnet_dist_only': False,
         'chrombpnet_dist_only_cfg_num': 1,
+        'annotations': [],
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -274,6 +275,7 @@ def parse_args():
     parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
     parser.add_argument('--tau1_normal_prior', type=str_to_bool, help="Use normal prior for tau1")
     parser.add_argument('--tau2_normal_prior', type=str_to_bool, help="Use normal prior for tau2")
+    parser.add_argument('--annotations', type=str, nargs='+', help="List of annotations to use") # playing around with negative annotations and scaling
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")

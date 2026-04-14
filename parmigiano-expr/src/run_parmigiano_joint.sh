@@ -51,6 +51,7 @@ tau1_normal_prior=False
 tau2_normal_prior=False
 chrombpnet_dist_only=False
 chrombpnet_dist_only_cfg_num=1
+annotations=()
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -77,7 +78,7 @@ while [[ $# -gt 0 ]]; do
             expression_path="$2"
             shift 2
             ;;
-        --annotation_dir|--annotation-dir|--annotations)
+        --annotation_dir|--annotation-dir)
             annotation_dir="$2"
             shift 2
             ;;
@@ -169,6 +170,14 @@ while [[ $# -gt 0 ]]; do
             chrombpnet_dist_only_cfg_num="$2"
             shift 2
             ;;
+        --annotations|--annotations-list)
+            shift
+            annotations=()
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                annotations+=("$1")
+                shift
+            done
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -200,6 +209,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --tau2_normal_prior, --tau2-normal-prior BOOL    Use normal prior for tau2 (default: False)"
             echo "  --chrombpnet_dist_only, --chrombpnet-dist-only BOOL    Use chrombpnet and dist_to_TSS annotations only (default: False)"
             echo "  --chrombpnet_dist_only_cfg_num, --chrombpnet-dist-only-cfg-num INT    Configuration number for chrombpnet and dist_to_TSS annotations only (default: 1)"
+            echo "  --annotations, --annotations-list LIST    List of annotations to use (default: None)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -244,14 +254,23 @@ fi
 
 if [ "$tau2_normal_prior" == "True" ] && [ "$tau12" == "False" ]; then
     echo "Using normal prior for tau2..."
-    echo "Require mode nonlinear mode (overriding tau12=False)..."
+    echo "Require nonlinear mode (overriding tau12=False)..."
     tau12=True
 fi
 
 if [ "$tau1_normal_prior" == "True" ] && [ "$tau12" == "False" ]; then
     echo "Using normal prior for tau1..."
-    echo "Require mode nonlinear mode (overriding tau12=False)..."
+    echo "Require nonlinear mode (overriding tau12=False)..."
     tau12=True
+fi
+
+annotations_args=()
+if [ "${#annotations[@]}" -gt 0 ]; then
+    echo "Using annotations: ${annotations[@]}"
+    echo "Setting annotation_dir to raw annotations directory..."
+    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
+    annotations_args=(--annotations "${annotations[@]}")
+
 fi
 
 # another check if experiments already run / is running --> exit if so
@@ -260,7 +279,8 @@ if [ -d "$output_dir" ]; then
     exit 1
 fi
 
-# scale annotation matrix
+
+
 python -u parmigiano_joint.py --config $config_file \
                          --gene_list $gene_list \
                          --expression_path $expression_path \
@@ -285,7 +305,8 @@ python -u parmigiano_joint.py --config $config_file \
                          --tau2_normal_prior $tau2_normal_prior \
                          --chrombpnet_dist_only $chrombpnet_dist_only \
                          --chrombpnet_dist_only_cfg_num $chrombpnet_dist_only_cfg_num \
-                         --burden $burden
+                         --burden $burden \
+                         "${annotations_args[@]}"
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then

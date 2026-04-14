@@ -74,7 +74,9 @@ def process_chrombpnet_dist_only(Z, config, logger):
     Process chrombpnet and dist_to_TSS annotations for chrombpnet_dist_only mode.
     """
 
-    logger.info(f"Keeping only chrombpnet and dist_to_TSS annotations...")
+    if config.get('chrombpnet_dist_only', False):
+        logger.info(f"Keeping only chrombpnet and dist_to_TSS annotations...")
+    
     logger.info(f"Taking mean of chrombpnet annotations...")
     Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
     keep_columns = ['chrombpnet', 'dist_to_TSS']
@@ -106,6 +108,46 @@ def process_chrombpnet_dist_only(Z, config, logger):
     else:
         raise ValueError(f"chrombpnet_dist_only_cfg_num must be 1, 2, or 3, got {config.get('chrombpnet_dist_only_cfg_num', 1)}")
     
+    return Z
+
+
+def process_annotations(Z, config, logger):
+    """
+    Process annotations.
+    """
+    logger.info(f"Processing annotations...")
+    annotations = config.get('annotations')
+    Z_chrombonet_dist = process_chrombpnet_dist_only(Z.copy(), config, logger)
+    Z_cols = []
+    for annotation in annotations:
+        logger.info(f"Processing annotation: {annotation}")
+        if annotation == 'chrombpnet' or annotation == 'dist_to_TSS':
+            continue
+        elif annotation == 'ABC':
+            Z_cols.append('ABC')
+            Z['ABC'] = Z.filter(like="ABC").mean(axis=1)
+            # these should be positive
+            assert Z['ABC'].min() >= 0, "ABC annotations should be positive"
+        elif annotation == 'CADD_raw':
+            Z_cols.append('CADD_raw')
+            # z-scale
+            Z['CADD_raw'] = (Z['CADD_raw'] - Z['CADD_raw'].mean()) / Z['CADD_raw'].std()
+        elif annotation == 'Eigen-raw':
+            # z-scale
+            Z_cols.append('Eigen-raw')
+            Z['Eigen-raw'] = (Z['Eigen-raw'] - Z['Eigen-raw'].mean()) / Z['Eigen-raw'].std()
+        elif annotation == 'enformer':
+            # average _TF_delta_min over cell types
+            Z_cols.append('enformer_min')
+            Z['enformer_min'] = Z.filter(like="_TF_delta_min").mean(axis=1)
+            # average _TF_delta_max over cell types
+            Z_cols.append('enformer_max')
+            Z['enformer_max'] = Z.filter(like="_TF_delta_max").mean(axis=1)
+        elif annotation in ['lof', 'missense', 'splice', 'MAP20', 'alphamissense']:
+            Z_cols.append(annotation)
+            Z[annotation] = Z.filter(like=annotation).mean(axis=1)
+    Z = Z[Z_cols]
+    Z = pd.concat([Z_chrombonet_dist, Z], axis=1)
     return Z
         
 
@@ -221,6 +263,8 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
     if config.get('chrombpnet_dist_only', False): # only two annotations (chrombpnet and dist_to_TSS)
         Z = process_chrombpnet_dist_only(Z, config, logger)
 
+    if config.get('annotations', []):
+        Z = process_annotations(Z, config, logger)
     
     else: # keep all annotations 
         logger.info(f"Dropping promoter_3000 and promoter_2000 annotations...")
