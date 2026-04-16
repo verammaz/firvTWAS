@@ -52,6 +52,7 @@ tau2_normal_prior=False
 chrombpnet_dist_only=False
 chrombpnet_dist_only_cfg_num=1
 annotations=()
+negative_annotations=False
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -178,6 +179,10 @@ while [[ $# -gt 0 ]]; do
                 shift
             done
             ;;
+        --negative_annotations|--negative-annotations)
+            negative_annotations="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -210,6 +215,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --chrombpnet_dist_only, --chrombpnet-dist-only BOOL    Use chrombpnet and dist_to_TSS annotations only (default: False)"
             echo "  --chrombpnet_dist_only_cfg_num, --chrombpnet-dist-only-cfg-num INT    Configuration number for chrombpnet and dist_to_TSS annotations only (default: 1)"
             echo "  --annotations, --annotations-list LIST    List of annotations to use (default: None)"
+            echo "  --negative_annotations, --negative-annotations BOOL    Use negative annotations (default: False)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -270,6 +276,7 @@ if [ "${#annotations[@]}" -gt 0 ]; then
     echo "Setting annotation_dir to raw annotations directory..."
     annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
     annotations_args=(--annotations "${annotations[@]}")
+    negative_annotations=True
 
 fi
 
@@ -306,7 +313,8 @@ python -u parmigiano_joint.py --config $config_file \
                          --chrombpnet_dist_only $chrombpnet_dist_only \
                          --chrombpnet_dist_only_cfg_num $chrombpnet_dist_only_cfg_num \
                          --burden $burden \
-                         "${annotations_args[@]}"
+                         "${annotations_args[@]}" \
+                         --negative_annotations $negative_annotations \
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then

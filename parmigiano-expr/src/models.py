@@ -25,8 +25,8 @@ def annotation_lambda(
     Per-variant λ in the joint / per-gene / simulate paths.
 
     Nonlinear:
-      - default: relu(Z·τ₁ − T) * exp(Z·τ₂) * MAF
-      - chrombpnet_dist_only: (Z·τ₁) * exp(Z·τ₂) * MAF  (signed; T unused in λ)
+      - default (only positive annotations): relu(Z·τ₁ − T) * exp(Z·τ₂) * MAF
+      - negative_annotations: (Z·τ₁) * exp(Z·τ₂) * MAF  where abs(Z·τ₁) > T, else 0
 
     Linear: relu(Z·τ − T) * MAF
     """
@@ -35,8 +35,8 @@ def annotation_lambda(
         lin1 = Z_gene.matmul(tau1)
         lin2 = Z_gene.matmul(tau2)
         mod = torch.exp(lin2)
-        if config.get("chrombpnet_dist_only", False):
-            return lin1 * mod * maf_weights_gene
+        if config.get("negative_annotations", False):
+            return torch.where(torch.abs(lin1) >= threshold, lin1 * mod * maf_weights_gene, 0)
         return F.relu(lin1 - threshold) * mod * maf_weights_gene
 
     assert tau is not None
@@ -54,12 +54,10 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     if (not config.get('burden', False)) and (not config.get('skat', False)):
         rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
     
-    # chrombpnet_dist_only: λ uses signed Z·τ₁ (no ReLU gate); do not sample a useless threshold
-    learn_threshold = (not config.get("no_filter", False)) and (
-        not config.get("chrombpnet_dist_only", False)
-    )
+    
+    learn_threshold = not config.get("no_filter", False)
     if learn_threshold:
-        threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device)
+        threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device) # TODO: change prior?
     else:
         threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
         pyro.deterministic("threshold", threshold)
