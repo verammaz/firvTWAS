@@ -5,7 +5,7 @@ CHRO_NB=${SLURM_ARRAY_TASK_ID}
 echo "Chromosome ${CHRO_NB}"
 echo
 
-annotations=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/chr${CHRO_NB}
+annotations=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/chr${CHRO_NB}
 plink=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/chroms
 output_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/chr${CHRO_NB}
 

@@ -65,9 +65,9 @@ python rename_genotype_mapping.py # generates participant_id -> sample_id mappin
 ```bash
 ./submit_genotype_jobs.sh
 ```
+| Z matrices also synced here
 
-11.
-Subset expression matrix to only genes for which we have G + Z matrices
+11. Subset expression matrix to only genes for which we have G + Z matrices
 ```bash
 python subset_expression.py
 ```

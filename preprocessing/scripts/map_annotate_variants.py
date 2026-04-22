@@ -37,7 +37,7 @@ try:
 except ValueError:
     sys.exit("Error: -chrom must be an integer between 1 and 22")
 
-ANNOTATIONS_DIR = os.path.join(f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed", "annotations", f"chr{CHRO_NB}")
+ANNOTATIONS_DIR = os.path.join(f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed", "annotations_raw", f"chr{CHRO_NB}")
 GENOTYPE_PATH=f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/chroms"
 
 noncoding_annotations = ['chr','pos','ref', 'alt', 'MAP20', 'phyloP17way_primate', 'phyloP30way_mammalian',
@@ -319,16 +319,28 @@ def add_chrombpnet(data):
     for cell in ['microglia', 'astrocyte', 'neuron', 'oligodendrocyte']:
         chrombp=pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/rare_variant_chrombpnet_{cell}_chr{CHRO_NB}_variant_peak_pairs_scored.csv", 
                             sep = "\t", 
-                            usecols = ['Chr', 'BP', 'REF', 'ALT', 'log_counts_diff_chrombpnet'])
+                            usecols = ['Chr', 'BP', 'REF', 'ALT', 'log_counts_diff_chrombpnet', 'assay'])
         chrombp = chrombp.rename(columns={'Chr': 'chr', 'BP': 'pos', 'REF': 'ref', 'ALT': 'alt'})
         chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
-        chrombp = chrombp.drop(columns=['chr'])
+        chrombp = chrombp[chrombp['assay']=='ATAC']
+        chrombp = chrombp.drop(columns=['chr', 'assay'])
         data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
         n_variants = len(data) - pd.isna(data['log_counts_diff_chrombpnet']).sum()
         print(f'\tCell type: {cell}')
         print(f'\t\tNumber of ChromBPNet variants:  {n_variants} ({n_variants/len(data):.2%})')
         data[f'log_counts_diff_chrombpnet_{cell}'] = np.where(data['log_counts_diff_chrombpnet'].isna(), 0, data['log_counts_diff_chrombpnet'])
         data = data.drop(columns=['log_counts_diff_chrombpnet'])
+        # chrombp = pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/zscore_normalized/rare_variant_chrombpnet_{cell}_ATAC_chr{CHRO_NB}_zscore.tsv.gz", 
+        #                         sep = "\t", usecols = ['CHR', 'BP', 'A1', 'A2', 'raw_score'])
+        # chrombp = chrombp.rename(columns={'CHR': 'chr', 'BP': 'pos', 'A1': 'alt', 'A2': 'ref'})
+        # chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
+        # chrombp = chrombp.drop(columns=['chr'])
+        # data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
+        # n_variants = len(data) - pd.isna(data['raw_score']).sum() # log_counts_diff score 
+        # print(f'\tCell type: {cell}')
+        # print(f'\t\tNumber of ChromBPNet variants:  {n_variants} ({n_variants/len(data):.2%})')
+        # data[f'chrombpnet_{cell}'] = np.where(data['raw_score'].isna(), 0, data['raw_score'])
+        # data = data.drop(columns=['raw_score'])
     print("\n")
     return data
 

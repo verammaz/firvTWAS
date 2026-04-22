@@ -19,7 +19,7 @@ OUTPUT_DIR = sys.argv[3]
 NUM_THREADS = int(os.environ.get("NUM_THREADS", "4"))
 
 BASE_DIR = f"/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed"
-ANNOTATIONS_DIR = os.path.join(BASE_DIR, "annotations", f"chr{CHR}")
+ANNOTATIONS_DIR = os.path.join(BASE_DIR, "annotations_raw", f"chr{CHR}")
 GENOTYPES_DIR = os.path.join(BASE_DIR, "genotypes", f"chr{CHR}")
 COVARIATES_FILE = os.path.join(BASE_DIR, "covariates.tsv")
 
