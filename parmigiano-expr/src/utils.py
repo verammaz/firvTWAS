@@ -79,7 +79,7 @@ def impute_missing(G, Z):
     return G, Z
 
 
-def get_MAF_weights(G, device, b_dist=25):
+def get_MAF_weights(G, device, b_dist=1):
     maf = torch.round(G).mean(0) / 2
     maf[maf > 0.5] = 1 - maf[maf > 0.5]
     
@@ -199,7 +199,7 @@ def fill_defaults(args, yaml_config=None):
         'n_posterior': 50,
         'lr': 0.1,
         'output_dir': 'parmigiano_outputs',
-        'beta_maf': 25,
+        'maf_beta': 1,
         'brr_results_dir': None,
         'diagnosis_col': 'Diagnosis',
         'sample_col': 'SampleID',
@@ -222,7 +222,16 @@ def fill_defaults(args, yaml_config=None):
         'tau2_normal_prior': False,
         'chrombpnet_dist_only': False,
         'chrombpnet_dist_only_cfg_num': 1,
+        'negative_annotations': False,
+        'negative_gate_mode': 'hard_abs',
+        'negative_gate_sharpness': 20.0,
+        'lin2_clip': None,
+        'tau2_link': 'exp',
+        'wg_positive': False,
         'annotations': [],
+        'tau1_intercept': False,
+        'common_variants_only': False,
+        'maf_threshold': 0.05
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -268,7 +277,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, help="Path to output directory")
     parser.add_argument('--epochs', type=int, help="Number of epochs to train")
     parser.add_argument('--lr', type=float, help="Learning rate")
-    parser.add_argument('--beta_maf', type=int, help="Beta parameter for MAF weights")
+    parser.add_argument('--maf_beta', type=int, help="Beta parameter for MAF weights")
     parser.add_argument('--use_brr', type=str_to_bool, help="Use Bayesian Ridge Regression results")
     parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
     parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
@@ -276,6 +285,17 @@ def parse_args():
     parser.add_argument('--tau1_normal_prior', type=str_to_bool, help="Use normal prior for tau1")
     parser.add_argument('--tau2_normal_prior', type=str_to_bool, help="Use normal prior for tau2")
     parser.add_argument('--annotations', type=str, nargs='+', help="List of annotations to use") # playing around with negative annotations and scaling
+    parser.add_argument('--negative_annotations', type=str_to_bool, help="Use negative annotations")
+    parser.add_argument('--negative_gate_mode', type=str, choices=['hard_abs', 'smooth_abs', 'signed_relu_abs'],
+                        help="Gate mode for negative annotations")
+    parser.add_argument('--negative_gate_sharpness', type=float, help="Sharpness for smooth_abs gate")
+    parser.add_argument('--lin2_clip', type=float, help="Clip magnitude for lin2 = Z @ tau2 in nonlinear mode")
+    parser.add_argument('--tau2_link', type=str, choices=['exp', 'softplus'],
+                        help="Link function for tau2 modulation term")
+    parser.add_argument('--wg_positive', type=str_to_bool, help="Use positive prior for w_g via LogNormal")
+    parser.add_argument('--tau1_intercept', type=str_to_bool, help="Use intercept for tau1")
+    parser.add_argument('--common_variants_only', type=str_to_bool, help="Only use common variants")
+    parser.add_argument('--maf_threshold', type=float, help="MAF threshold for common variants")
     # Per-gene specific flags
     parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
     parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")

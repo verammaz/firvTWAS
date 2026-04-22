@@ -53,6 +53,14 @@ chrombpnet_dist_only=False
 chrombpnet_dist_only_cfg_num=1
 annotations=()
 negative_annotations=False
+negative_gate_mode=hard_abs
+negative_gate_sharpness=20.0
+lin2_clip=
+tau2_link=exp
+wg_positive=False
+common_variants_only=False
+tau1_intercept=False
+maf_beta=1
 
 # TODO: match scale_center with brr_results_dir if use_brr is True
 
@@ -183,6 +191,38 @@ while [[ $# -gt 0 ]]; do
             negative_annotations="$2"
             shift 2
             ;;
+        --negative_gate_mode|--negative-gate-mode)
+            negative_gate_mode="$2"
+            shift 2
+            ;;
+        --negative_gate_sharpness|--negative-gate-sharpness)
+            negative_gate_sharpness="$2"
+            shift 2
+            ;;
+        --lin2_clip|--lin2-clip)
+            lin2_clip="$2"
+            shift 2
+            ;;
+        --tau2_link|--tau2-link)
+            tau2_link="$2"
+            shift 2
+            ;;
+        --wg_positive|--wg-positive)
+            wg_positive="$2"
+            shift 2
+            ;;
+        --common_variants_only|--common-variants-only)
+            common_variants_only="$2"
+            shift 2
+            ;;
+        --tau1_intercept|--tau1-intercept)
+            tau1_intercept="$2"
+            shift 2
+            ;;
+        --maf_beta|--maf-beta)
+            maf_beta="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -216,6 +256,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --chrombpnet_dist_only_cfg_num, --chrombpnet-dist-only-cfg-num INT    Configuration number for chrombpnet and dist_to_TSS annotations only (default: 1)"
             echo "  --annotations, --annotations-list LIST    List of annotations to use (default: None)"
             echo "  --negative_annotations, --negative-annotations BOOL    Use negative annotations (default: False)"
+            echo "  --negative_gate_mode, --negative-gate-mode STR         Negative gate mode: hard_abs|smooth_abs|signed_relu_abs (default: hard_abs)"
+            echo "  --negative_gate_sharpness, --negative-gate-sharpness FLOAT   Sharpness for smooth_abs gate (default: 20.0)"
+            echo "  --lin2_clip, --lin2-clip FLOAT              Clip abs(lin2=Z@tau2) in nonlinear mode (default: unset/no clip)"
+            echo "  --tau2_link, --tau2-link STR                Modulation link: exp|softplus (default: exp)"
+            echo "  --wg_positive, --wg-positive BOOL            Use positive LogNormal prior for w_g (default: False)"
+            echo "  --common_variants_only, --common-variants-only BOOL    Use common variants only (default: False)"
+            echo "  --tau1_intercept, --tau1-intercept BOOL    Use intercept for tau1 (default: False)"
+            echo "  --maf_beta, --maf-beta FLOAT              Beta parameter for MAF weights (default: 1)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
             echo "  -h, --help                               Show this help message"
             exit 0
@@ -280,6 +328,11 @@ if [ "${#annotations[@]}" -gt 0 ]; then
 
 fi
 
+lin2_clip_args=()
+if [ -n "${lin2_clip}" ]; then
+    lin2_clip_args=(--lin2_clip "${lin2_clip}")
+fi
+
 # another check if experiments already run / is running --> exit if so
 if [ -d "$output_dir" ]; then
     echo "Output directory $output_dir already exists. Exiting..."
@@ -315,6 +368,14 @@ python -u parmigiano_joint.py --config $config_file \
                          --burden $burden \
                          "${annotations_args[@]}" \
                          --negative_annotations $negative_annotations \
+                         --negative_gate_mode $negative_gate_mode \
+                         --negative_gate_sharpness $negative_gate_sharpness \
+                         "${lin2_clip_args[@]}" \
+                         --tau2_link $tau2_link \
+                         --wg_positive $wg_positive \
+                         --common_variants_only $common_variants_only \
+                         --tau1_intercept $tau1_intercept \
+                         --maf_beta $maf_beta \
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$output_dir" ]; then

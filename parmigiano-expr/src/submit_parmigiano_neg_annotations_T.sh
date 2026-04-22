@@ -3,15 +3,7 @@
 # 
 # Two taus (nonlinear) + select annotations --> negative annotations 
 # tau2 normal prior
-# noT because Ztau could be < 0 so removing ReLU 
-# tau12=True
 # config 1 scaling of chrombpnet and dist_to_TSS 
-# BRR + noT + log1p + scale_center
-# BRR + noT + log1p + scale_center + no w_g (nowg) ablations
-# BRR + noT + log1p + scale_center + no rho_g (norhog) ablations
-# BRR + noT + log1p + scale_center + no w_g + no rho_g (nowg_norhog) ablations
-#
-# --> repeat with scale_center=False and brr_results_dir=baseline_log1p
 
 
 

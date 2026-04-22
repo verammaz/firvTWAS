@@ -32,11 +32,33 @@ def annotation_lambda(
     """
     if mode == "nonlinear":
         assert tau1 is not None and tau2 is not None
-        lin1 = Z_gene.matmul(tau1)
         lin2 = Z_gene.matmul(tau2)
-        mod = torch.exp(lin2)
+        lin2_clip = config.get("lin2_clip", None)
+        if lin2_clip is not None:
+            lin2 = torch.clamp(lin2, min=-float(lin2_clip), max=float(lin2_clip))
+        if config.get('tau1_intercept', False):
+            Z_gene = torch.cat([torch.ones(Z_gene.shape[0], 1, dtype=torch.float32, device=Z_gene.device), Z_gene], dim=1)
+        assert Z_gene.shape[1] == tau1.shape[0], "Z_gene and tau1 must have the same number of columns"
+        lin1 = Z_gene.matmul(tau1)
+        tau2_link = config.get("tau2_link", "exp")
+        if tau2_link == "exp":
+            mod = torch.exp(lin2)
+        elif tau2_link == "softplus":
+            mod = F.softplus(lin2) + 1e-8
+        else:
+            raise ValueError(f"Unsupported tau2_link: {tau2_link}")
         if config.get("negative_annotations", False):
-            return torch.where(torch.abs(lin1) >= threshold, lin1 * mod * maf_weights_gene, 0)
+            gate_mode = config.get("negative_gate_mode", "hard_abs")
+            if gate_mode == "hard_abs":
+                return torch.where(torch.abs(lin1) >= threshold, lin1 * mod * maf_weights_gene, 0)
+            if gate_mode == "smooth_abs":
+                sharpness = float(config.get("negative_gate_sharpness", 20.0))
+                gate = torch.sigmoid(sharpness * (torch.abs(lin1) - threshold))
+                return gate * lin1 * mod * maf_weights_gene
+            if gate_mode == "signed_relu_abs":
+                signed = torch.sign(lin1) * F.relu(torch.abs(lin1) - threshold)
+                return signed * mod * maf_weights_gene
+            raise ValueError(f"Unsupported negative_gate_mode: {gate_mode}")
         return F.relu(lin1 - threshold) * mod * maf_weights_gene
 
     assert tau is not None
@@ -68,12 +90,16 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     if mode == "nonlinear": # try different priors for tau1 and tau2
         if config.get('tau1_normal_prior', False):
             # One coefficient per annotation (same shape as Dirichlet tau2)
-            tau1 = pyro.sample(
-                "tau1",
-                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
-            ).to(data.device)
+            if config.get('tau1_intercept', False): # intercept on tau1
+                tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno + 1]).to_event(1)).to(data.device)
+            else:
+                tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno]).to_event(1)).to(data.device)
         else:
-            tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
+            if config.get('tau1_intercept', False): # intercept on tau1
+                prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1)
+                tau1 = pyro.sample('tau1', dist.Dirichlet(prior_tau1)).to(data.device)
+            else:
+                tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
         if config.get('tau2_normal_prior', False):
             tau2 = pyro.sample(
                 "tau2",
@@ -319,7 +345,11 @@ def simulate_expression(data, config, mode="linear"):
 
     prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
     if mode == "nonlinear":
-        tau1 = pyro.sample("tau1", dist.Dirichlet(prior)).to(data.device)
+        if config.get("tau1_intercept", False):
+            prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1)
+            tau1 = pyro.sample("tau1", dist.Dirichlet(prior_tau1)).to(data.device)
+        else:
+            tau1 = pyro.sample("tau1", dist.Dirichlet(prior)).to(data.device)
         if config.get("tau2_normal_prior", False):
             tau2 = pyro.sample(
                 "tau2",

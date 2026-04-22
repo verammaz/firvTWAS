@@ -515,7 +515,7 @@ class DataTensors:
             X=torch.as_tensor(X.values, dtype=torch.float32, device=device),
             Y=Y,
             maf_weights=torch.as_tensor(
-                utils.get_MAF_weights(G_tensor, device, config['beta']),
+                utils.get_MAF_weights(G_tensor, device, config['maf_beta']),
                 dtype=torch.float32,
                 device=device
             ),

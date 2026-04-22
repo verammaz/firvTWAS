@@ -22,6 +22,25 @@ def simulations_to_samples(simulated_parameters, gene_names):
         beta_samples_sim[gene_name] = beta.detach().cpu().numpy()[None, :]
         mu_samples_sim[gene_name]   = mu.detach().cpu().numpy()[None, :]
     return beta_samples_sim, mu_samples_sim
+
+
+def _tau_labels_for_nonlinear(annotations, tau1_values, tau2_values):
+    """
+    Build row labels for nonlinear tau outputs.
+    Supports tau1 having an optional intercept while tau2 does not.
+    """
+    n_anno = len(annotations)
+    n_tau1 = len(np.asarray(tau1_values).ravel())
+    n_tau2 = len(np.asarray(tau2_values).ravel())
+
+    if n_tau1 == n_anno and n_tau2 == n_anno:
+        return annotations, False
+    if n_tau1 == n_anno + 1 and n_tau2 == n_anno:
+        return ["intercept"] + annotations, True
+
+    raise ValueError(
+        f"Unexpected nonlinear tau dimensions: tau1={n_tau1}, tau2={n_tau2}, annotations={n_anno}"
+    )
     
 def save_results(losses, times, posterior_stats, config, annotations, 
                  data = None,
@@ -52,11 +71,20 @@ def save_results(losses, times, posterior_stats, config, annotations,
             print(f"Could not save tau_T.csv: {e}")
     else:
         try:
+            tau1_vals = np.asarray(posterior_stats['tau1']['mean'][0]).ravel()
+            tau2_vals = np.asarray(posterior_stats['tau2']['mean'][0]).ravel()
+            row_labels, has_tau1_intercept = _tau_labels_for_nonlinear(
+                annotations, tau1_vals, tau2_vals
+            )
+
             tau_df = pd.DataFrame()
-            tau_df['Annotation'] = annotations
-            tau_df['Tau1'] = posterior_stats['tau1']['mean'][0]
+            tau_df['Annotation'] = row_labels
+            tau_df['Tau1'] = tau1_vals
             tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
-            tau_df['Tau2'] = posterior_stats['tau2']['mean'][0]
+            if has_tau1_intercept:
+                tau_df['Tau2'] = np.concatenate(([np.nan], tau2_vals))
+            else:
+                tau_df['Tau2'] = tau2_vals
             tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
         except Exception as e:
             print(f"Could not save tau_T.csv: {e}")
@@ -95,9 +123,19 @@ def save_results(losses, times, posterior_stats, config, annotations,
             if len(valid_tau_history) > 0:
                 tau1_history_array = np.stack([np.asarray(p[0], dtype=float).ravel() for p in valid_tau_history])
                 tau2_history_array = np.stack([np.asarray(p[1], dtype=float).ravel() for p in valid_tau_history])
-                n_ann = tau1_history_array.shape[1]
-                assert n_ann == len(annotations), "Number of annotations must match number of columns in tau1_history and tau2_history"
-                cols1 = [f"Tau1_{a}" for a in annotations]
+                n_tau1 = tau1_history_array.shape[1]
+                n_tau2 = tau2_history_array.shape[1]
+
+                if n_tau1 == len(annotations) and n_tau2 == len(annotations):
+                    tau1_labels = annotations
+                elif n_tau1 == len(annotations) + 1 and n_tau2 == len(annotations):
+                    tau1_labels = ["intercept"] + annotations
+                else:
+                    raise ValueError(
+                        f"Unexpected tau history dimensions: tau1={n_tau1}, tau2={n_tau2}, annotations={len(annotations)}"
+                    )
+
+                cols1 = [f"Tau1_{a}" for a in tau1_labels]
                 cols2 = [f"Tau2_{a}" for a in annotations]
                 tau_history_df = pd.concat(
                     [

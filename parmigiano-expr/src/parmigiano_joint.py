@@ -120,6 +120,10 @@ def make_init_loc_fn(data, config, eps=1e-3):
     # Prior means for tau ~ Dirichlet(1) and threshold ~ Beta(2,20)
     num_anno = data.num_anno
     tau_init = torch.ones(num_anno, device=device) / num_anno
+    if config.get("tau1_intercept", False):
+        tau1_init = torch.ones(num_anno + 1, device=device) / (num_anno + 1)
+    else:
+        tau1_init = tau_init
     threshold_init = torch.tensor(2.0 / (2.0 + 20.0), device=device)
 
     def _get_brr_beta_vector(gene_name):
@@ -173,7 +177,7 @@ def make_init_loc_fn(data, config, eps=1e-3):
                     config,
                     "nonlinear",
                     threshold_init,
-                    tau1=tau_init,
+                    tau1=tau1_init,
                     tau2=tau_init,
                 )
             else:
