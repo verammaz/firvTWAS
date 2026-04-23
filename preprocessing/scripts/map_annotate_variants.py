@@ -315,32 +315,39 @@ def add_lof_missense(data):
 
 
 def add_chrombpnet(data):
+
+    def add_chrombpnet_assay(data,cell, assay):
+        chrombp = pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/zscore_normalized/rare_variant_chrombpnet_{cell}_{assay}_chr{CHRO_NB}_zscore.tsv.gz", 
+                                sep = "\t", usecols = ['CHR', 'BP', 'A1', 'A2', 'zscore'])
+        chrombp = chrombp.rename(columns={'CHR': 'chr', 'BP': 'pos', 'A1': 'alt', 'A2': 'ref'})
+        chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
+        chrombp = chrombp.drop(columns=['chr'])
+        data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
+        n_variants = len(data) - pd.isna(data['zscore']).sum() # log_counts_diff, zscored 
+        print(f'\tCell type: {cell}')
+        print(f'\t\tNumber of ChromBPNet variants ({assay}):  {n_variants} ({n_variants/len(data):.2%})')
+        data[f'chrombpnet_{assay}_{cell}'] = np.where(data['zscore'].isna(), 0, data['zscore'])
+        data = data.drop(columns=['zscore'])
+        return data
+
     print("Adding ChromBPNet annotations...")
     for cell in ['microglia', 'astrocyte', 'neuron', 'oligodendrocyte']:
-        chrombp=pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/rare_variant_chrombpnet_{cell}_chr{CHRO_NB}_variant_peak_pairs_scored.csv", 
-                            sep = "\t", 
-                            usecols = ['Chr', 'BP', 'REF', 'ALT', 'log_counts_diff_chrombpnet', 'assay'])
-        chrombp = chrombp.rename(columns={'Chr': 'chr', 'BP': 'pos', 'REF': 'ref', 'ALT': 'alt'})
-        chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
-        chrombp = chrombp[chrombp['assay']=='ATAC']
-        chrombp = chrombp.drop(columns=['chr', 'assay'])
-        data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
-        n_variants = len(data) - pd.isna(data['log_counts_diff_chrombpnet']).sum()
-        print(f'\tCell type: {cell}')
-        print(f'\t\tNumber of ChromBPNet variants:  {n_variants} ({n_variants/len(data):.2%})')
-        data[f'log_counts_diff_chrombpnet_{cell}'] = np.where(data['log_counts_diff_chrombpnet'].isna(), 0, data['log_counts_diff_chrombpnet'])
-        data = data.drop(columns=['log_counts_diff_chrombpnet'])
-        # chrombp = pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/zscore_normalized/rare_variant_chrombpnet_{cell}_ATAC_chr{CHRO_NB}_zscore.tsv.gz", 
-        #                         sep = "\t", usecols = ['CHR', 'BP', 'A1', 'A2', 'raw_score'])
-        # chrombp = chrombp.rename(columns={'CHR': 'chr', 'BP': 'pos', 'A1': 'alt', 'A2': 'ref'})
+        # chrombp=pd.read_csv(f"/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/rare_variant_chrombpnet_{cell}_chr{CHRO_NB}_variant_peak_pairs_scored.csv", 
+        #                     sep = "\t", 
+        #                     usecols = ['Chr', 'BP', 'REF', 'ALT', 'log_counts_diff_chrombpnet', 'assay'])
+        # chrombp = chrombp.rename(columns={'Chr': 'chr', 'BP': 'pos', 'REF': 'ref', 'ALT': 'alt'})
         # chrombp = chrombp[chrombp['chr']==int(CHRO_NB)]
-        # chrombp = chrombp.drop(columns=['chr'])
+        # chrombp = chrombp[chrombp['assay']=='ATAC']
+        # chrombp = chrombp.drop(columns=['chr', 'assay'])
         # data = data.merge(chrombp, on=['pos', 'ref', 'alt'], how='left')
-        # n_variants = len(data) - pd.isna(data['raw_score']).sum() # log_counts_diff score 
+        # n_variants = len(data) - pd.isna(data['log_counts_diff_chrombpnet']).sum()
         # print(f'\tCell type: {cell}')
         # print(f'\t\tNumber of ChromBPNet variants:  {n_variants} ({n_variants/len(data):.2%})')
-        # data[f'chrombpnet_{cell}'] = np.where(data['raw_score'].isna(), 0, data['raw_score'])
-        # data = data.drop(columns=['raw_score'])
+        # data[f'log_counts_diff_chrombpnet_{cell}'] = np.where(data['log_counts_diff_chrombpnet'].isna(), 0, data['log_counts_diff_chrombpnet'])
+        # data = data.drop(columns=['log_counts_diff_chrombpnet'])
+        data = add_chrombpnet_assay(data, cell, 'ATAC')
+        data = add_chrombpnet_assay(data, cell, 'H3K27ac')
+
     print("\n")
     return data
 
@@ -442,7 +449,6 @@ def annotate(gene_pos, bim, ref_table=None):
 
     # Add AlphaMissense annotations
     data = add_alphamissense(data)
-
     
     # Map variants to genes
     variant_genes, gene_variants = map_genes(data, gene_pos)

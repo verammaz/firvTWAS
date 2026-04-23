@@ -49,7 +49,7 @@ submit_one() {
         --tau1_intercept True \
         --common_variants_only False \
         --gene_list "${GENE_LIST_200}" \
-        --maf_beta 25 \
+        --maf_beta 1 \
         --chrombpnet_dist_only_cfg_num "${CONFIG_NUM}" \
         --annotations "${ANNOTATIONS[@]}" \
         --negative_annotations True \

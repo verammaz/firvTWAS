@@ -76,10 +76,15 @@ submit_one() {
 # submit_one "${PREFIX}/rare_common/tau1_dir_intercept" "${GENE_LIST_200}" False True False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, tau1 intercept 
 # submit_one "${PREFIX}/rare_common/tau1_dir_no_intercept" "${GENE_LIST_200}" False False False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, no tau1 intercept 
 
-submit_one "${PREFIX}/rare_common_maf_beta25/tau1_norm_intercept" "${GENE_LIST_200}" True True False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, tau1 intercept 
-submit_one "${PREFIX}/rare_common_maf_beta25/tau1_norm_no_intercept" "${GENE_LIST_200}" True False False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, no tau1 intercept 
-submit_one "${PREFIX}/rare_common_maf_beta25/tau1_dir_intercept" "${GENE_LIST_200}" False True False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, tau1 intercept 
-submit_one "${PREFIX}/rare_common_maf_beta25/tau1_dir_no_intercept" "${GENE_LIST_200}" False False False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, no tau1 intercept 
+# submit_one "${PREFIX}/rare_common_maf_beta25/tau1_norm_intercept" "${GENE_LIST_200}" True True False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, tau1 intercept 
+# submit_one "${PREFIX}/rare_common_maf_beta25/tau1_norm_no_intercept" "${GENE_LIST_200}" True False False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, no tau1 intercept 
+# submit_one "${PREFIX}/rare_common_maf_beta25/tau1_dir_intercept" "${GENE_LIST_200}" False True False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, tau1 intercept 
+# submit_one "${PREFIX}/rare_common_maf_beta25/tau1_dir_no_intercept" "${GENE_LIST_200}" False False False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, no tau1 intercept 
+
+submit_one "${PREFIX}/rare_common_random_maf_beta25/tau1_norm_intercept" "${GENE_LIST_RANDOM_200}" True True False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, tau1 intercept 
+submit_one "${PREFIX}/rare_common_random_maf_beta25/tau1_norm_no_intercept" "${GENE_LIST_RANDOM_200}" True False False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, no tau1 intercept 
+submit_one "${PREFIX}/rare_common_random_maf_beta25/tau1_dir_intercept" "${GENE_LIST_RANDOM_200}" False True False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, tau1 intercept 
+submit_one "${PREFIX}/rare_common_random_maf_beta25/tau1_dir_no_intercept" "${GENE_LIST_RANDOM_200}" False False False "${BRR_RESULTS_DIR_FULL}" # tau1 dirichlet, no tau1 intercept 
 
 # submit_one "${PREFIX}/rare_common_random/tau1_norm_intercept" "${GENE_LIST_RANDOM_200}" True True False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, tau1 intercept 
 # submit_one "${PREFIX}/rare_common_random/tau1_norm_no_intercept" "${GENE_LIST_RANDOM_200}" True False False "${BRR_RESULTS_DIR_FULL}" # tau1 normal, no tau1 intercept 

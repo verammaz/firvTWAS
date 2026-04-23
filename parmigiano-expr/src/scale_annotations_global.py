@@ -2,11 +2,12 @@ import os
 import pandas as pd
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 
 ANNOTATIONS_DIR_RAW = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw"
 ANNOTATIONS_DIR_SCALED = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled"
 CHROMBPNET_ZSCORED_DIR = "/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/zscore_normalized"
-
+PLOT_DIR = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/plots"
 
 annotations = ['chr', 'pos', 'MAP20', 'phyloP17way_primate', 'phyloP30way_mammalian', 'phastCons17way_primate_rankscore', 'phastCons30way_mammalian', 
                 'GERP_RS', 'bStatistic', 'integrated_fitCons_score', 'H1-hESC_fitCons_score', 'gnomAD_genomes_POPMAX_AF', 'gnomAD_genomes_AFR_AF', 
@@ -52,22 +53,8 @@ def load_full_annotation_matrix(annotations_dir):
                 gene = file.split('_')[0]
                 annotations = pd.read_csv(os.path.join(annotations_dir, f'chr{chrom}', file), sep='\t', compression='gzip')
                 assert 'variant_id' in annotations.columns, f"variant_id column not found in {file}"
-                # add chrombpnet zscored value
-                for cell in ['microglia', 'astrocyte', 'neuron', 'oligodendrocyte']:
-                    print(f"\t adding chrombpnet zscored {cell} values...")
-                    chrombp = pd.read_csv(f"{CHROMBPNET_ZSCORED_DIR}/rare_variant_chrombpnet_{cell}_ATAC_chr{chrom}_zscore.tsv.gz", sep='\t', compression='gzip',
-                        usecols = ['CHR', 'BP', 'zscore']    )
-                    chrombp = chrombp.rename(columns={'CHR': 'chr', 'BP': 'pos'})
-                    chrombp = chrombp[chrombp['chr']==chrom]
-                    chrombp = chrombp.drop(columns=['chr'])
-                    annotations = annotations.merge(chrombp, on=['pos'], how='left')
-                    annotations[f'chrombpnet_{cell}'] = np.where(annotations['zscore'].isna(), 0, annotations['zscore'])
-                    annotations = annotations.drop(columns=['zscore'])
-                    annotations = annotations.drop(columns=[f'chrombpnet_log_counts_diff_{cell}'])
-                    # rename 
-                    annotations = annotations.rename(columns={f'chrombpnet_{cell}': f'chrombpnet_log_counts_diff_{cell}'})
-                    # add gene column
-                    annotations['gene'] = gene
+                # add gene column
+                annotations['gene'] = gene
                 all_annotations.append(annotations)
     return pd.concat(all_annotations)
 
@@ -80,7 +67,11 @@ def scale_annotations_global(annotations_matrix):
     for column in annotations_matrix.columns:
         if column in ['variant_id', 'chr', 'pos','dist_to_TSS']:
             continue
-        elif column.startswith('chrombpnet_log_counts_diff_'): # already scaled in per-gene annotations load and merge step
+        elif column.startswith('chrombpnet'): # already scaled in map_annotate_variants.py
+            continue
+        elif 'ABC_' in column:
+            continue
+        elif 'gnomAD_genomes_POPMAX_AF' == column:
             continue
         else:
             values = annotations_matrix[column].values
@@ -113,9 +104,25 @@ def save_per_gene_annotations(annotations_matrix):
             # save tensor
             # gene_annotations_tensor = torch.tensor(gene_annotations.values)
             # torch.save(gene_annotations_tensor, os.path.join(ANNOTATIONS_DIR_SCALED, f'chr{chrom}', f'{gene}_annotations.pt'))
-        
+
+def plot_distribution_of_annotations(annotations_matrix):
+    """
+    Plot distribution of each annotation column.
+    """
+    # create one plot with subplots for each annotation column
+    fig, axes = plt.subplots(len(annotations_matrix.columns), 1, figsize=(10, 10))
+    for i, column in enumerate(annotations_matrix.columns):
+        axes[i].hist(annotations_matrix[column], bins=100)
+        axes[i].set_title(column)
+    plt.savefig(os.path.join(PLOT_DIR, 'annotations_distribution.png'))
+    plt.close()
+
 
 if __name__ == "__main__":
     annotations_matrix = load_full_annotation_matrix(ANNOTATIONS_DIR_RAW)
+    # plot distirbution of each annotation column -- pre scaling
+    plot_distribution_of_annotations(annotations_matrix)
     annotations_matrix = scale_annotations_global(annotations_matrix)
+    # plot distirbution of each annotation column -- post scaling
+    plot_distribution_of_annotations(annotations_matrix)
     save_per_gene_annotations(annotations_matrix)

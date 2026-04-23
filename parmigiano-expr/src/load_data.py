@@ -82,11 +82,12 @@ def process_chrombpnet_dist_only(Z, config, logger):
     keep_columns = ['chrombpnet', 'dist_to_TSS']
     Z = Z[keep_columns]
 
-    ANNOTATIONS_RAW = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/"
+    ANNOTATIONS_RAW1 = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/"
+    ANNOTATIONS_RAW2 = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/"
     ANNOTATIONS_MINMAX = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/"
 
     if config.get('chrombpnet_dist_only_cfg_num', 1) == 1:
-        assert config.get('annotation_dir', None) == ANNOTATIONS_RAW, "chrombpnet_dist_only_cfg_num 1 requires raw annotations directory"
+        assert config.get('annotation_dir', None) in [ANNOTATIONS_RAW1, ANNOTATIONS_RAW2], "chrombpnet_dist_only_cfg_num 1 requires raw annotations directory"
         logger.info(f"Z-scoring chrombpnet...")
         Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
         logger.info(f"Clipping chrombpnet at 10, keeping sign...")
@@ -94,7 +95,7 @@ def process_chrombpnet_dist_only(Z, config, logger):
         logger.info(f"Clipping dist_to_TSS at 0...")
         Z['dist_to_TSS'] = Z['dist_to_TSS'].clip(lower=0)
     elif config.get('chrombpnet_dist_only_cfg_num', 1) == 2:
-        assert config.get('annotation_dir', None) == ANNOTATIONS_RAW, "chrombpnet_dist_only_cfg_num 2 requires raw annotations directory"
+        assert config.get('annotation_dir', None) in [ANNOTATIONS_RAW1, ANNOTATIONS_RAW2], "chrombpnet_dist_only_cfg_num 2 requires raw annotations directory"
         logger.info(f"Z-scoring chrombpnet...")
         Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
         logger.info(f"Clipping chrombpnet at 10, keeping sign...")
@@ -211,12 +212,16 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
                 variant_ids_Z.extend(z.index.tolist())
 
                 if len(g.columns) != len(z.index):
-                    logger.warning(f"Skipping {gene}: genotype variants ({len(g.columns)}) "
-                                   f"!= annotation rows ({len(z.index)})")
+                    logger.warning(f"{gene}: genotype variants ({len(g.columns)}) "
+                                   f"!= annotation rows ({len(z.index)})... subsetting to intersection")
                     # Remove the IDs we just added since we're skipping
                     del variant_ids_G[-len(g.columns):]
                     del variant_ids_Z[-len(z.index):]
-                    continue
+                    # dont error, just subset to intersection and reorder Z to match G column order
+                    intersection = set(g.columns) & set(z.index)
+                    z = z.loc[intersection]
+                    g = g[intersection]
+                    
 
                 # Prefix variant names with gene for uniqueness
                 g.columns = [f"{gene}_{col}" for col in g.columns]
@@ -254,7 +259,11 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
         z_only = set(Z.index) - set(G.columns)
         logger.error(f"Variants in G but not Z: {g_only}")
         logger.error(f"Variants in Z but not G: {z_only}")
-        raise ValueError("Genotype columns must match annotation rows")
+        # dont error, just subset to intersection and reorder Z to match G column order
+        intersection = set(G.columns) & set(Z.index)
+        Z = Z.loc[intersection]
+        G = G[intersection]
+        #raise ValueError("Genotype columns must match annotation rows")
 
     Z = Z.loc[G.columns]  # reorder Z to match G column order
 
@@ -485,8 +494,6 @@ class DataTensors:
             G = G[keep_variants]
             Z = Z.loc[keep_variants]
             
-
-
         # Parse gene names and indices from column names (GENE_variantID)
         gene_indices = {}
         gene_names = []
@@ -545,7 +552,6 @@ def get_chr_genes(config):
 
 def load_tau_T(config, device, Z):
     """Load tau weights and filter threshold from a directory of per-run files.
-    Supports both linear (tau.csv, threshold.csv) and NN (tau1.csv, tau2.csv, b1.csv) modes.
     """
     logger = utils.get_logger()
     path = config['tauT_path']

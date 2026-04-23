@@ -29,7 +29,7 @@ output_dir=seed_genes_minmax
 config_file=config_base.yaml
 gene_list=genes_list_seed.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
-annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/
+annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/
 brr_results_dir=/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge
 train_test=True
 use_clip_norm=True
@@ -58,6 +58,8 @@ negative_gate_sharpness=20.0
 lin2_clip=
 tau2_link=exp
 wg_positive=False
+threshold_prior_alpha=2.0
+threshold_prior_beta=20.0
 common_variants_only=False
 tau1_intercept=False
 maf_beta=1
@@ -211,6 +213,14 @@ while [[ $# -gt 0 ]]; do
             wg_positive="$2"
             shift 2
             ;;
+        --threshold_prior_alpha|--threshold-prior-alpha)
+            threshold_prior_alpha="$2"
+            shift 2
+            ;;
+        --threshold_prior_beta|--threshold-prior-beta)
+            threshold_prior_beta="$2"
+            shift 2
+            ;;
         --common_variants_only|--common-variants-only)
             common_variants_only="$2"
             shift 2
@@ -261,6 +271,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --lin2_clip, --lin2-clip FLOAT              Clip abs(lin2=Z@tau2) in nonlinear mode (default: unset/no clip)"
             echo "  --tau2_link, --tau2-link STR                Modulation link: exp|softplus (default: exp)"
             echo "  --wg_positive, --wg-positive BOOL            Use positive LogNormal prior for w_g (default: False)"
+            echo "  --threshold_prior_alpha, --threshold-prior-alpha FLOAT   Alpha for threshold Beta prior (default: 2.0)"
+            echo "  --threshold_prior_beta, --threshold-prior-beta FLOAT     Beta for threshold Beta prior (default: 20.0)"
             echo "  --common_variants_only, --common-variants-only BOOL    Use common variants only (default: False)"
             echo "  --tau1_intercept, --tau1-intercept BOOL    Use intercept for tau1 (default: False)"
             echo "  --maf_beta, --maf-beta FLOAT              Beta parameter for MAF weights (default: 1)"
@@ -291,7 +303,7 @@ if [ "$chrombpnet_dist_only" == "True" ]; then
     case "$chrombpnet_dist_only_cfg_num" in
         1|2)
             echo "Need raw annotations directory... (will override)"
-            annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
+            annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/
             ;;
         3)
             echo "Need raw annotations directory... (will override)"
@@ -322,7 +334,7 @@ annotations_args=()
 if [ "${#annotations[@]}" -gt 0 ]; then
     echo "Using annotations: ${annotations[@]}"
     echo "Setting annotation_dir to raw annotations directory..."
-    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/
+    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/
     annotations_args=(--annotations "${annotations[@]}")
     negative_annotations=True
 
@@ -373,6 +385,8 @@ python -u parmigiano_joint.py --config $config_file \
                          "${lin2_clip_args[@]}" \
                          --tau2_link $tau2_link \
                          --wg_positive $wg_positive \
+                         --threshold_prior_alpha $threshold_prior_alpha \
+                         --threshold_prior_beta $threshold_prior_beta \
                          --common_variants_only $common_variants_only \
                          --tau1_intercept $tau1_intercept \
                          --maf_beta $maf_beta \

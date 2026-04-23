@@ -79,7 +79,9 @@ def joint_forward(data, config, simulated_parameters=None, mode="linear"):
     
     learn_threshold = not config.get("no_filter", False)
     if learn_threshold:
-        threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device) # TODO: change prior?
+        t_alpha = float(config.get("threshold_prior_alpha", 2.0))
+        t_beta = float(config.get("threshold_prior_beta", 20.0))
+        threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
     else:
         threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
         pyro.deterministic("threshold", threshold)
@@ -338,7 +340,9 @@ def simulate_expression(data, config, mode="linear"):
         not config.get("chrombpnet_dist_only", False)
     )
     if learn_threshold:
-        threshold = pyro.sample("threshold", dist.Beta(2.0, 20.0)).to(data.device)
+        t_alpha = float(config.get("threshold_prior_alpha", 2.0))
+        t_beta = float(config.get("threshold_prior_beta", 20.0))
+        threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
     else:
         threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
         pyro.deterministic("threshold", threshold)

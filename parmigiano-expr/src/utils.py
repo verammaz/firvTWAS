@@ -228,10 +228,12 @@ def fill_defaults(args, yaml_config=None):
         'lin2_clip': None,
         'tau2_link': 'exp',
         'wg_positive': False,
+        'threshold_prior_alpha': 2.0,
+        'threshold_prior_beta': 20.0,
         'annotations': [],
         'tau1_intercept': False,
         'common_variants_only': False,
-        'maf_threshold': 0.05
+        'maf_threshold': 0.01
     }
 
     # TODO: match scale_center with brr_results_dir if use_brr is True
@@ -293,6 +295,8 @@ def parse_args():
     parser.add_argument('--tau2_link', type=str, choices=['exp', 'softplus'],
                         help="Link function for tau2 modulation term")
     parser.add_argument('--wg_positive', type=str_to_bool, help="Use positive prior for w_g via LogNormal")
+    parser.add_argument('--threshold_prior_alpha', type=float, help="Alpha for threshold Beta prior")
+    parser.add_argument('--threshold_prior_beta', type=float, help="Beta for threshold Beta prior")
     parser.add_argument('--tau1_intercept', type=str_to_bool, help="Use intercept for tau1")
     parser.add_argument('--common_variants_only', type=str_to_bool, help="Only use common variants")
     parser.add_argument('--maf_threshold', type=float, help="MAF threshold for common variants")

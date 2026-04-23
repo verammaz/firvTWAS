@@ -168,7 +168,7 @@ def process_gene(gene, file, samples, gene_variant_counts, variant_gene_counts):
             f"Mismatch: {len(variant_ids)} genotype variants vs {len(annotations)} annotations"
 
 
-        # --- Resave annotations matrix ---
+        # --- Resave annotations matrix ---        
         annotations.to_csv(annotations_file, sep="\t", index=True, compression="gzip") #variant_id index
         var_ids_file = os.path.join(ANNOTATIONS_DIR, f"{gene}_var_ids.txt")
         with open(var_ids_file, "w") as f:
