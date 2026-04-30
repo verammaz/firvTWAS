@@ -53,9 +53,11 @@ def get_logger():
     return logger
 
 
-def scale(df):
+def minmax_scale(df):
     return (df - df.min()) / (df.max() - df.min())
 
+def z_scale(df):
+    return (df - df.mean()) / df.std()
 
 def impute_missing(G, Z):
     """
@@ -121,14 +123,13 @@ def preprocess_covariates(covariates, covariate_cols):
     return df
 
 
-def scale_tpm_matrix(tpm, median_filter=0, scale_center=True):
+def scale_tpm_matrix(tpm, median_filter=0):
     tpm_scaled = tpm[tpm.median(1) > median_filter].copy()
     tpm_scaled = np.log1p(tpm_scaled)
     # No centering or scaling?
-    if scale_center:
-        row_means = tpm_scaled.mean(axis=1)
-        row_stds = tpm_scaled.std(axis=1)
-        tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
+    row_means = tpm_scaled.mean(axis=1)
+    row_stds = tpm_scaled.std(axis=1)
+    tpm_scaled = tpm_scaled.sub(row_means, axis=0).div(row_stds, axis=0)
     return tpm_scaled
 
 
@@ -175,8 +176,6 @@ def get_chr_gene(tpm, genes):
     return chr_gene[['feature', 'CHR']]
 
 
-
-
 def get_MAF(G):
     maf = torch.round(G).mean(0) / 2
     return maf
@@ -195,49 +194,27 @@ def fill_defaults(args, yaml_config=None):
     """
     defaults = {
         'model': 'parmigiano',
-        'epochs': 300,
+        'epochs': 500,
         'n_posterior': 50,
-        'lr': 0.1,
-        'output_dir': 'parmigiano_outputs',
+        'lr': 0.01,
+        'joint_output_dir': 'parmigiano_outputs/joint',
+        'pergene_output_dir': 'parmigiano_outputs/pergene', # not used in joint mode
         'maf_beta': 1,
         'brr_results_dir': None,
-        'diagnosis_col': 'Diagnosis',
-        'sample_col': 'SampleID',
-        'simulate': False,
-        'burden': False,
-        'no_wg': False,
-        'no_rhog': False,
-        'skat': False,
         'chromosome': 'chr21', # not used in joint mode
-        'no_filter': False,
-        'scale_anno': False, # is this used?
         'train_test': False,
         'log_level': 'INFO',
         'log_file': None,
-        'refits': 1,
-        'use_brr': True,
-        'scale_center': True,
-        'tau12': False,
+        'refits': 10,
         'tau1_normal_prior': False,
-        'tau2_normal_prior': False,
-        'chrombpnet_dist_only': False,
-        'chrombpnet_dist_only_cfg_num': 1,
-        'negative_annotations': False,
-        'negative_gate_mode': 'hard_abs',
-        'negative_gate_sharpness': 20.0,
-        'lin2_clip': None,
-        'tau2_link': 'exp',
-        'wg_positive': False,
-        'threshold_prior_alpha': 2.0,
-        'threshold_prior_beta': 20.0,
+        'T_prior_alpha': 2.0,
+        'T_prior_beta': 20.0,
         'annotations': [],
-        'tau1_intercept': False,
-        'common_variants_only': False,
-        'maf_threshold': 0.01
+        'maf_threshold': None,
+        'lin2_clip': None,
+        'gate_mode': 'hard_abs',
+        'gate_sharpness': 20.0,
     }
-
-    # TODO: match scale_center with brr_results_dir if use_brr is True
-    # TODO: add config check -- some flags have to bet set together
 
     if yaml_config:
         defaults.update(yaml_config)
@@ -261,63 +238,48 @@ def str_to_bool(v):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Configuration for Parmigiano Package")
+    # Essential arguments
     parser.add_argument('--config', type=str, help="Path to the YAML configuration file")
-    # Data paths - joint mode uses covariates_path/expression_path; per-gene uses phenotype_path
-    parser.add_argument('--phenotype_path', type=str, help="Path to phenotype file (per-gene mode)")
+    # General arguments
+   
+    # Data paths
     parser.add_argument('--covariates_path', type=str, help="Path to covariates file (joint mode)")
     parser.add_argument('--expression_path', type=str, help="Path to expression file (joint mode)")
-    parser.add_argument('--diagnosis_col', type=str, help="Column name for trait. Default: Diagnosis")
-    parser.add_argument('--sample_col', type=str, help="Column name for sample IDs. Default: SampleID")
     parser.add_argument('--genotype_path', type=str, help="Path to genotype matrix")
     parser.add_argument('--annotation_path', type=str, help="Path to annotation matrix")
     parser.add_argument('--genotype_dir', type=str, help="Path to genotypes directory")
     parser.add_argument('--annotation_dir', type=str, help="Path to annotations directory")
-    parser.add_argument('--chrombpnet_dist_only', type=str_to_bool, help="Only use chrombpnet and dist_to_tss annotations")
-    parser.add_argument('--chrombpnet_dist_only_cfg_num', type=int, help="Configuration number for chrombpnet and dist_to_tss annotations only")
     parser.add_argument('--gene_list', type=str, help="List of genes or path to file with gene list")
+    parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
+    
+    # Output directories
+    parser.add_argument('--joint_output_dir', type=str, help="Path to joint output directory")
+    parser.add_argument('--pergene_output_dir', type=str, help="Path to per-gene output directory")
+
+    # Model training
     parser.add_argument('--n_posterior', type=int, help="Number of posterior samples")
-    parser.add_argument('--output_dir', type=str, help="Path to output directory")
     parser.add_argument('--epochs', type=int, help="Number of epochs to train")
     parser.add_argument('--lr', type=float, help="Learning rate")
+    parser.add_argument('--refits', type=int, help="Number of refits")
+    parser.add_argument('--clip_norm', type=float, help="Clip norm of weights (default: 10.0)")
+    parser.add_argument('--lin2_clip', type=float, help="Clip lin2 before exp (default: None)")
+    # Model parameters
     parser.add_argument('--maf_beta', type=int, help="Beta parameter for MAF weights")
-    parser.add_argument('--use_brr', type=str_to_bool, help="Use Bayesian Ridge Regression results")
-    parser.add_argument('--brr_results_dir', type=str, help="Path to Bayesian Ridge Regression results directory")
-    parser.add_argument('--scale_center', type=str_to_bool, help="Scale expression matrix by center and scale")
-    parser.add_argument('--tau12', type=str_to_bool, help="Use tau1 and tau2 for nonlinear annotation interaction")
     parser.add_argument('--tau1_normal_prior', type=str_to_bool, help="Use normal prior for tau1")
-    parser.add_argument('--tau2_normal_prior', type=str_to_bool, help="Use normal prior for tau2")
-    parser.add_argument('--annotations', type=str, nargs='+', help="List of annotations to use") # playing around with negative annotations and scaling
-    parser.add_argument('--negative_annotations', type=str_to_bool, help="Use negative annotations")
-    parser.add_argument('--negative_gate_mode', type=str, choices=['hard_abs', 'smooth_abs', 'signed_relu_abs'],
-                        help="Gate mode for negative annotations")
-    parser.add_argument('--negative_gate_sharpness', type=float, help="Sharpness for smooth_abs gate")
-    parser.add_argument('--lin2_clip', type=float, help="Clip magnitude for lin2 = Z @ tau2 in nonlinear mode")
-    parser.add_argument('--tau2_link', type=str, choices=['exp', 'softplus'],
-                        help="Link function for tau2 modulation term")
-    parser.add_argument('--wg_positive', type=str_to_bool, help="Use positive prior for w_g via LogNormal")
+    parser.add_argument('--annotations', type=str, nargs='+', help="List of annotations to use") 
     parser.add_argument('--threshold_prior_alpha', type=float, help="Alpha for threshold Beta prior")
     parser.add_argument('--threshold_prior_beta', type=float, help="Beta for threshold Beta prior")
-    parser.add_argument('--tau1_intercept', type=str_to_bool, help="Use intercept for tau1")
-    parser.add_argument('--common_variants_only', type=str_to_bool, help="Only use common variants")
     parser.add_argument('--maf_threshold', type=float, help="MAF threshold for common variants")
+    parser.add_argument('--gate_mode', type=str, choices=['hard_abs', 'smooth_abs'], help="Gate mode for |lin1| thresholding")
+    parser.add_argument('--gate_sharpness', type=float, help="Sharpness for smooth_abs gate (higher = harder)")
+   
     # Per-gene specific flags
-    parser.add_argument('--simulate', type=str_to_bool, help="Simulate phenotypes")
-    parser.add_argument('--burden', type=str_to_bool, help="Remove rho (burden mode - just mean)")
-    parser.add_argument('--no_wg', type=str_to_bool, help="Remove w_g gene weight")
-    parser.add_argument('--no_rhog', type=str_to_bool, help="Remove rho_g proportion burden versus dispersion")
-    parser.add_argument('--skat', type=str_to_bool, help="SKAT mode (just variance)")
     parser.add_argument('--chromosome', type=str, help="Chromosome of focus (per-gene analysis only)")
-    parser.add_argument('--tauT_path', type=str, help="Path for tauT weights (per-gene analysis only)")
-    parser.add_argument('--no_filter', type=str_to_bool, help="Don't filter variants by parmigiano threshold")
     # Joint mode flags
-    parser.add_argument('--scale_anno', type=str_to_bool, help="Scale annotation matrix")
     parser.add_argument('--train_test', type=str_to_bool, help="Split data into train and test sets")
     # Logging
     parser.add_argument('--log_level', type=str,
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help="Logging level (default: INFO)")
     parser.add_argument('--log_file', type=str, help="Optional path to log file")
-    parser.add_argument('--refits', type=int, help="Number of refits")
-    parser.add_argument('--use_clip_norm', type=str_to_bool, help="Use clip norm of weights (default: True)")
-    parser.add_argument('--clip_norm', type=float, help="Clip norm of weights (default: 10.0)")
     return parser.parse_args()

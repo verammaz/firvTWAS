@@ -14,196 +14,53 @@ import load_data
 def annotation_lambda(
     Z_gene,
     maf_weights_gene,
-    config,
-    mode: str,
     threshold,
-    tau=None,
     tau1=None,
     tau2=None,
+    lin2_clip=None,
+    logger=None,
+    gate_mode="hard_abs",
+    gate_sharpness=20.0,
 ):
     """
     Per-variant λ in the joint / per-gene / simulate paths.
 
     Nonlinear:
-      - default (only positive annotations): relu(Z·τ₁ − T) * exp(Z·τ₂) * MAF
-      - negative_annotations: (Z·τ₁) * exp(Z·τ₂) * MAF  where abs(Z·τ₁) > T, else 0
+      (Z·τ₁) * exp(Z·τ₂) * MAF  where abs(Z·τ₁) >= T, else 0
 
-    Linear: relu(Z·τ − T) * MAF
     """
-    if mode == "nonlinear":
-        assert tau1 is not None and tau2 is not None
-        lin2 = Z_gene.matmul(tau2)
-        lin2_clip = config.get("lin2_clip", None)
-        if lin2_clip is not None:
-            lin2 = torch.clamp(lin2, min=-float(lin2_clip), max=float(lin2_clip))
-        if config.get('tau1_intercept', False):
-            Z_gene = torch.cat([torch.ones(Z_gene.shape[0], 1, dtype=torch.float32, device=Z_gene.device), Z_gene], dim=1)
-        assert Z_gene.shape[1] == tau1.shape[0], "Z_gene and tau1 must have the same number of columns"
-        lin1 = Z_gene.matmul(tau1)
-        tau2_link = config.get("tau2_link", "exp")
-        if tau2_link == "exp":
-            mod = torch.exp(lin2)
-        elif tau2_link == "softplus":
-            mod = F.softplus(lin2) + 1e-8
-        else:
-            raise ValueError(f"Unsupported tau2_link: {tau2_link}")
-        if config.get("negative_annotations", False):
-            gate_mode = config.get("negative_gate_mode", "hard_abs")
-            if gate_mode == "hard_abs":
-                return torch.where(torch.abs(lin1) >= threshold, lin1 * mod * maf_weights_gene, 0)
-            if gate_mode == "smooth_abs":
-                sharpness = float(config.get("negative_gate_sharpness", 20.0))
-                gate = torch.sigmoid(sharpness * (torch.abs(lin1) - threshold))
-                return gate * lin1 * mod * maf_weights_gene
-            if gate_mode == "signed_relu_abs":
-                signed = torch.sign(lin1) * F.relu(torch.abs(lin1) - threshold)
-                return signed * mod * maf_weights_gene
-            raise ValueError(f"Unsupported negative_gate_mode: {gate_mode}")
-        return F.relu(lin1 - threshold) * mod * maf_weights_gene
-
-    assert tau is not None
-    return F.relu(Z_gene.matmul(tau) - threshold) * maf_weights_gene
-
-
-def joint_forward(data, config, simulated_parameters=None, mode="linear"):
-    logger = get_logger()
-
-    if not config.get('no_wg', False):
-        w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([data.num_genes]).to_event(1)).to(data.device)
+    assert tau1 is not None and tau2 is not None
+    # Ztau2
+    lin2 = Z_gene.matmul(tau2)
+    if lin2_clip is not None:
+        clip = float(lin2_clip)
+        lin2 = torch.clamp(lin2, min=-clip, max=clip)
+    mod = torch.exp(lin2)
+    # add intercept to Z_gene
+    Z_gene = torch.cat([torch.ones(Z_gene.shape[0], 1, dtype=torch.float32, device=Z_gene.device), Z_gene], dim=1)
+    assert Z_gene.shape[1] == tau1.shape[0], "Z_gene and tau1 must have the same number of columns"
+    # Ztau1
+    lin1 = Z_gene.matmul(tau1)    
+    # if logger is not None:
+    #     logger.info(f"lin1: {lin1.shape}, mod: {mod.shape}, maf_weights_gene: {maf_weights_gene.shape}, threshold: {threshold}")
+    #     logger.info(f"lin1 min: {lin1.min()}, lin1 max: {lin1.max()}, lin1 mean: {lin1.mean()}, lin1 std: {lin1.std()}")
+    #     logger.info(f"mod min: {mod.min()}, mod max: {mod.max()}, mod mean: {mod.mean()}, mod std: {mod.std()}")
+    #     logger.info(f"maf_weights_gene min: {maf_weights_gene.min()}, maf_weights_gene max: {maf_weights_gene.max()}, maf_weights_gene mean: {maf_weights_gene.mean()}, maf_weights_gene std: {maf_weights_gene.std()}")
+    #     logger.info(f"threshold: {threshold.min()}, threshold max: {threshold.max()}, threshold mean: {threshold.mean()}, threshold std: {threshold.std()}")
+   
+    if gate_mode == "hard_abs":
+        gate = (torch.abs(lin1) >= threshold).to(lin1.dtype)
+    elif gate_mode == "smooth_abs":
+        sharp = float(gate_sharpness)
+        gate = torch.sigmoid(sharp * (torch.abs(lin1) - threshold))
     else:
-        w_g = torch.ones(data.num_genes, device=data.device)
-
-    if (not config.get('burden', False)) and (not config.get('skat', False)):
-        rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
-    
-    
-    learn_threshold = not config.get("no_filter", False)
-    if learn_threshold:
-        t_alpha = float(config.get("threshold_prior_alpha", 2.0))
-        t_beta = float(config.get("threshold_prior_beta", 20.0))
-        threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
-    else:
-        threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
-        pyro.deterministic("threshold", threshold)
-
-    # prior for taus is uniform over annotations
-    prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
-
-    if mode == "nonlinear": # try different priors for tau1 and tau2
-        if config.get('tau1_normal_prior', False):
-            # One coefficient per annotation (same shape as Dirichlet tau2)
-            if config.get('tau1_intercept', False): # intercept on tau1
-                tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno + 1]).to_event(1)).to(data.device)
-            else:
-                tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno]).to_event(1)).to(data.device)
-        else:
-            if config.get('tau1_intercept', False): # intercept on tau1
-                prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1)
-                tau1 = pyro.sample('tau1', dist.Dirichlet(prior_tau1)).to(data.device)
-            else:
-                tau1 = pyro.sample('tau1', dist.Dirichlet(prior)).to(data.device)
-        if config.get('tau2_normal_prior', False):
-            tau2 = pyro.sample(
-                "tau2",
-                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
-            ).to(data.device)
-        else:
-            tau2 = pyro.sample('tau2', dist.Dirichlet(prior)).to(data.device)
-    else:
-        tau = pyro.sample('tau', dist.Dirichlet(prior)).to(data.device)
-
-    for gene_idx, gene_name in enumerate(data.gene_names):
-        G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
-        num_indivs = G_gene.shape[0]
-        if mode == "nonlinear":
-            lambda_ = annotation_lambda(
-                Z_gene,
-                maf_weights_gene,
-                config,
-                "nonlinear",
-                threshold,
-                tau1=tau1,
-                tau2=tau2,
-            )
-        else:
-            lambda_ = annotation_lambda(
-                Z_gene,
-                maf_weights_gene,
-                config,
-                "linear",
-                threshold,
-                tau=tau,
-            )
-
-        if config.get('no_rhog', False):
-            mu = w_g[gene_idx] * lambda_ # if no_wg: wg=1, sigma=mu^2
-            Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-            beta = mu + torch.abs(mu) * Z_norm  # beta = mu + sqrt(sigma) * Z_norm; torch.abs (not np) for grad/CUDA
-            # try sigma=1 
-            # beta = mu + Z_norm
-        else:
-            mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ if (not config.get('burden', False)) and (not config.get('skat', False)) else lambda_ * w_g[gene_idx]
-            if config.get('burden', False): #rho_g=1 --> sigma=0 (no variance, so beta=mu)
-                beta = w_g[gene_idx]* lambda_ #beta=mu
-            elif config.get('skat', False): #rho_g=0 --> mu=0
-                Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-                beta = torch.abs(w_g[gene_idx] * lambda_) * Z_norm  # sqrt(sigma) * Z_norm
-                # try sigma=1 
-                # beta = Z_norm
-            else: 
-                Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-                beta = (
-                    rho_g[gene_idx] * w_g[gene_idx] * lambda_
-                    + (1 - rho_g[gene_idx]) * torch.abs(w_g[gene_idx] * lambda_) * Z_norm
-                )
-                # try sigma=1 
-                #beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_ + Z_norm
-
-        pyro.deterministic(f"mu_{gene_name}", mu)            
-        pyro.deterministic(f"beta_{gene_name}", beta)
-
-        Gbeta = G_gene.matmul(beta)
-        mean = Gbeta.view(num_indivs)
-
-        pyro.deterministic(f"mean_{gene_name}", mean)
-
-        if torch.isnan(mean).any():
-            logger.warning(f"NaNs in mean at gene {gene_name}")
-            return "FAIL"
-
-        with pyro.plate(f'data_{gene_name}', num_indivs):
-            gene_key = gene_name.split("/")[1] if "/" in gene_name else gene_name
-            if simulated_parameters:
-                obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, 0.5),
-                                    obs=simulated_parameters[gene_name]['mean'])
-            else:
-                if data.brr_alphas is not None:
-                    std = torch.as_tensor(1.0 / np.sqrt(data.brr_alphas[gene_name]), dtype=torch.float32, device=data.device)
-                else:
-                    std = 0.5
-                obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, std),
-                                    obs=data.Y[gene_key])
-    return data
-
+        raise ValueError(f"Unsupported gate_mode: {gate_mode}")
+    return gate * lin1 * mod * maf_weights_gene
+        
 
 class ParmigianoExpJoint(PyroModule):
     """
     Joint model across genes - used by run_joint.py.
-    Supports burden, skat, no_wg, no_threshold modes.
-    tau (and threshold) are inferred, not pre-loaded.
-    """
-    def __init__(self, simulated_parameters=None):
-        super().__init__()
-
-        self.simulated_parameters = simulated_parameters
-
-    def forward(self, data, config):
-        return joint_forward(data, config, self.simulated_parameters)
-
-
-class ParmigianoExpJointNonlinear(PyroModule):
-    """
-    Same setup as parmigiano_expression, but with nonlinear annotation interaction.
     tau1 and tau2 for nonlinear annotation interaction
     """
     def __init__(self, simulated_parameters=None):
@@ -212,90 +69,129 @@ class ParmigianoExpJointNonlinear(PyroModule):
         self.simulated_parameters = simulated_parameters
 
     def forward(self, data, config):
-        return joint_forward(data, config, self.simulated_parameters, mode="nonlinear")
+        logger = get_logger()
+
+        w_g = torch.ones(data.num_genes, device=data.device)
+
+        rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
+        
+        t_alpha = float(config.get("threshold_prior_alpha", 2.0))
+        t_beta = float(config.get("threshold_prior_beta", 20.0))
+        threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
+    
+        if config.get('tau1_normal_prior', False):
+            # intercept on tau1
+            tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno + 1]).to_event(1)).to(data.device) # normal prior
+        else: # dirichlet prior for tau1
+            prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1) # uniform over annotations (+ intercept)
+            tau1 = pyro.sample('tau1', dist.Dirichlet(prior_tau1)).to(data.device)
+        
+        # prior for tau2 is normal
+        tau2 = pyro.sample('tau2', dist.Normal(0, 1).expand([data.num_anno]).to_event(1)).to(data.device) # normal  prior
+
+        for gene_idx, gene_name in enumerate(data.gene_names):
+            G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
+            num_indivs = G_gene.shape[0]
+            lambda_ = annotation_lambda(
+                    Z_gene,
+                    maf_weights_gene,
+                    threshold,
+                    tau1=tau1,
+                    tau2=tau2,
+                    lin2_clip=config.get("lin2_clip", None),
+                    gate_mode=config.get("gate_mode", "hard_abs"),
+                    gate_sharpness=config.get("gate_sharpness", 20.0),
+                    logger=logger,
+            )
+            
+            mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ 
+            sigma_sqrt = (1 - rho_g[gene_idx]) * torch.abs(w_g[gene_idx] * lambda_)
+            Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
+            beta = mu + sigma_sqrt * Z_norm
+                    
+            pyro.deterministic(f"mu_{gene_name}", mu) 
+            pyro.deterministic(f"sigma_{gene_name}", torch.pow(sigma_sqrt, 2))
+            pyro.deterministic(f"beta_{gene_name}", beta)
+
+            Gbeta = G_gene.matmul(beta)
+            mean = Gbeta.view(num_indivs)
+
+            pyro.deterministic(f"mean_{gene_name}", mean)
+
+            if torch.isnan(mean).any():
+                logger.warning(f"NaNs in mean at gene {gene_name}")
+                raise ValueError(f"NaNs in mean at gene {gene_name}")
+
+            with pyro.plate(f'data_{gene_name}', num_indivs):
+                gene_key = gene_name.split("/")[1] if "/" in gene_name else gene_name
+                if self.simulated_parameters:
+                    obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, 0.5),
+                                        obs=self.simulated_parameters[gene_name]['mean'])
+                else:
+                    if data.brr_alphas is not None:
+                        std = torch.as_tensor(1.0 / np.sqrt(data.brr_alphas[gene_name]), dtype=torch.float32, device=data.device)
+                    else:
+                        std = 0.5
+                    obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, std),
+                                        obs=data.Y[gene_key])
+        return data
 
 
 class ParmigianoExpPerGene(PyroModule):
     """
     Per-gene model - used by run_pergene.py.
     tau and threshold are pre-loaded into data tensors (not inferred here).
-    Supports burden, skat, no_wg, no_filter modes.
     Uses data.std (from alpha_dict) as observation noise.
     """
-    def __init__(self, config, data,simulated_parameters=None):
+    def __init__(self, config, data, simulated_parameters=None):
         super().__init__()
         self.simulated_parameters = simulated_parameters
         # exteranlly load tau and threshold from joint model fitting results
-        data = self.__load_tau_threshold(config, data)
+        self.__set_tau_threshold(data)
         self.data = data
         self.config = config
 
-    def __load_tau_threshold(self, config, data):
-        threshold, tau, tau1, tau2 = load_data.load_tau_threshold(config)
-        data.threshold = torch.as_tensor(threshold, dtype=torch.float32, device=data.device)
-        mode = 'nonlinear' if config.get('tau12', False) else 'linear'
-        if mode == 'nonlinear':
-            assert tau1 is not None and tau2 is not None, "tau1 and tau2 must be provided for nonlinear mode"
-            data.tau1 = torch.as_tensor(tau1, dtype=torch.float32, device=data.device)
-            data.tau2 = torch.as_tensor(tau2, dtype=torch.float32, device=data.device)
-        else:
-            assert tau is not None, "tau must be provided for linear mode"
-            data.tau = torch.as_tensor(tau, dtype=torch.float32, device=data.device)
-        return data
+    def __set_tau_threshold(self, data):
+        self.register_buffer("_fixed_tau1", data.tau1)
+        self.register_buffer("_fixed_tau2", data.tau2)
+        self.register_buffer("_fixed_threshold", data.threshold)
 
 
-    def forward(self, mode="linear"):
+    def forward(self, data, config=None):
+        """
+        SVI passes (data, config). ``data`` must match the tensors bound at init
+        (same layout as joint ``DataTensors`` for the genes in this fit).
+        """
         import utils
         logger = utils.get_logger()
+        if config is None:
+            config = self.config
+        self.data = data
 
-        if not self.config.get('no_wg', False):
-            w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([self.data.num_genes]).to_event(1)).to(self.data.device)
-        else:
-            w_g = torch.ones(self.data.num_genes, device=self.data.device)
+        th_use = self._fixed_threshold
+        tau1_use, tau2_use = self._fixed_tau1, self._fixed_tau2
 
-        if (not self.config.get('burden', False)) and (not self.config.get('skat', False)):
-            rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([self.data.num_genes]).to_event(1)).to(self.data.device)
+        w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([self.data.num_genes]).to_event(1)).to(self.data.device)
+        rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([self.data.num_genes]).to_event(1)).to(self.data.device)
 
         for gene_idx, gene_name in enumerate(self.data.gene_names):
             G_gene, Z_gene, maf_weights_gene = self.data.get_gene_data(gene_name)
             num_indivs = G_gene.shape[0]
-
-            # lambda_ does NOT include w_g — applied explicitly per branch, matching joint model
-            if mode == "nonlinear":
-                lambda_ = annotation_lambda(
+            lambda_ = annotation_lambda(
                     Z_gene,
                     maf_weights_gene,
-                    self.config,
-                    "nonlinear",
-                    self.data.threshold,
-                    tau1=self.data.tau1,
-                    tau2=self.data.tau2,
-                )
-            else:
-                lambda_ = annotation_lambda(
-                    Z_gene,
-                    maf_weights_gene,
-                    self.config,
-                    "linear",
-                    self.data.threshold,
-                    tau=self.data.tau,
-                )
-
-            if self.config.get('no_rhog', False):
-                mu = w_g[gene_idx] * lambda_
-                Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(self.data.device)
-                beta = mu + mu * Z_norm
-            else:
-                mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ if (not self.config.get('burden', False)) and (not self.config.get('skat', False)) else lambda_ * w_g[gene_idx]
-                if self.config.get('burden', False):
-                    beta = w_g[gene_idx] * lambda_
-                elif self.config.get('skat', False):
-                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(self.data.device)
-                    beta = w_g[gene_idx] * lambda_ * Z_norm
-                else:
-                    Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(self.data.device)
-                    beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_ + (1 - rho_g[gene_idx]) * w_g[gene_idx] * lambda_ * Z_norm
-
+                    th_use,
+                    tau1=tau1_use,
+                    tau2=tau2_use,
+                    lin2_clip=config.get("lin2_clip", None),
+                    gate_mode=config.get("gate_mode", "hard_abs"),
+                    gate_sharpness=config.get("gate_sharpness", 20.0),
+            )
+            
+            mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ 
+            sigma_sqrt = (1 - rho_g[gene_idx]) * torch.abs(w_g[gene_idx] * lambda_)
+            Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
+            beta = mu + sigma_sqrt * Z_norm
         
             pyro.deterministic(f"beta_{gene_name}", beta)
             Gbeta = G_gene.matmul(beta)
@@ -304,21 +200,28 @@ class ParmigianoExpPerGene(PyroModule):
 
             if torch.isnan(mean).any():
                 logger.warning(f"NaNs in mean at gene {gene_name}")
-                return "FAIL"
+                raise ValueError(f"NaNs in mean at gene {gene_name}")
 
             with pyro.plate(f'data_{gene_name}', num_indivs):
-                gene_key = gene_name.split("/")[1] if "/" in gene_name else gene_name
+                gene_key = gene_name.split("/")[-1] if "/" in gene_name else gene_name
                 if self.simulated_parameters:
                     obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, 1),
                                       obs=self.simulated_parameters[gene_name]['mean'])
                 else:
                     if self.data.brr_alphas is not None:
-                        std = torch.as_tensor(1.0 / np.sqrt(self.data.brr_alphas[gene_name]), dtype=torch.float32, device=self.data.device)
+                        alpha = self.data.brr_alphas.get(gene_name)
+                        if alpha is None:
+                            alpha = self.data.brr_alphas.get(gene_key)
+                        if alpha is None:
+                            alpha = 1.0
+                        std = torch.as_tensor(1.0 / np.sqrt(alpha), dtype=torch.float32, device=self.data.device)
                     else:
                         std = 0.5
+                    y_obs = self.data.Y[gene_key] if isinstance(self.data.Y, dict) else self.data.Y
                     obs = pyro.sample(f'obs_{gene_name}', dist.Normal(mean, std),
-                                      obs=self.data.Y[gene_key])
+                                      obs=y_obs)
         return self.data
+
 
 
 def simulate_expression(data, config, mode="linear"):
@@ -326,86 +229,53 @@ def simulate_expression(data, config, mode="linear"):
     Simulate expression from prior. Mirrors parmigiano_expression.forward exactly.
     """
     simulated_parameters = {}
+    w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([data.num_genes]).to_event(1)).to(data.device)
+    rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
+    simulated_parameters['rho_g'] = rho_g
 
-    if not config.get('no_wg', False):
-        w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([data.num_genes]).to_event(1)).to(data.device)
-    else:
-        w_g = torch.ones(data.num_genes, device=data.device)
-
-    if (not config.get('burden', False)) and (not config.get('skat', False)):
-        rho_g = pyro.sample("rho_g", dist.Beta(0.5, 0.5).expand([data.num_genes]).to_event(1)).to(data.device)
-        simulated_parameters['rho_g'] = rho_g
-
-    learn_threshold = (not config.get("no_filter", False)) and (
-        not config.get("chrombpnet_dist_only", False)
-    )
-    if learn_threshold:
-        t_alpha = float(config.get("threshold_prior_alpha", 2.0))
-        t_beta = float(config.get("threshold_prior_beta", 20.0))
-        threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
-    else:
-        threshold = torch.as_tensor(0, dtype=torch.float32).to(data.device)
-        pyro.deterministic("threshold", threshold)
-
-    prior = torch.ones(data.num_anno, device=data.device) / data.num_anno
-    if mode == "nonlinear":
-        if config.get("tau1_intercept", False):
-            prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1)
-            tau1 = pyro.sample("tau1", dist.Dirichlet(prior_tau1)).to(data.device)
-        else:
-            tau1 = pyro.sample("tau1", dist.Dirichlet(prior)).to(data.device)
-        if config.get("tau2_normal_prior", False):
-            tau2 = pyro.sample(
-                "tau2",
-                dist.Normal(0, 1).expand([data.num_anno]).to_event(1),
-            ).to(data.device)
-        else:
-            tau2 = pyro.sample("tau2", dist.Dirichlet(prior)).to(data.device)
-        simulated_parameters["tau1"] = tau1
-        simulated_parameters["tau2"] = tau2
-    else:
-        tau = pyro.sample("tau", dist.Dirichlet(prior)).to(data.device)
-        simulated_parameters["tau"] = tau
+    t_alpha = float(config.get("threshold_prior_alpha", 2.0))
+    t_beta = float(config.get("threshold_prior_beta", 20.0))
+    threshold = pyro.sample("threshold", dist.Beta(t_alpha, t_beta)).to(data.device)
+    
+    if config.get('tau1_normal_prior', False):
+        # intercept on tau1
+        tau1 = pyro.sample("tau1", dist.Normal(0, 1).expand([data.num_anno + 1]).to_event(1)).to(data.device) # normal prior
+    else: # dirichlet prior for tau1
+        prior_tau1 = torch.ones(data.num_anno + 1, device=data.device) / (data.num_anno + 1) # uniform over annotations (+ intercept)
+        tau1 = pyro.sample('tau1', dist.Dirichlet(prior_tau1)).to(data.device)
+    
+    # prior for tau2 is normal
+    tau2 = pyro.sample('tau2', dist.Normal(0, 1).expand([data.num_anno + 1]).to_event(1)).to(data.device) # normal  prior
 
     simulated_parameters['w_g'] = w_g
     simulated_parameters['threshold'] = threshold
     simulated_parameters['mode'] = mode
+    simulated_parameters['tau1'] = tau1
+    simulated_parameters['tau2'] = tau2
 
     for gene_idx, gene_name in enumerate(data.gene_names):
         simulated_parameters[gene_name] = {}
         G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
         num_indivs = G_gene.shape[0]
-        if mode == "nonlinear":
-            lambda_ = annotation_lambda(
+        lambda_ = annotation_lambda(
                 Z_gene,
                 maf_weights_gene,
-                config,
-                "nonlinear",
                 threshold,
                 tau1=tau1,
                 tau2=tau2,
-            )
-        else:
-            lambda_ = annotation_lambda(
-                Z_gene,
-                maf_weights_gene,
-                config,
-                "linear",
-                threshold,
-                tau=tau,
-            )
-        mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ if (not config.get('burden', False)) and (not config.get('skat', False)) else lambda_ * w_g[gene_idx]
-        if config.get('burden', False):
-            beta = w_g[gene_idx] * lambda_
-        elif config.get('skat', False):
-            Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-            beta = w_g[gene_idx] * lambda_ * Z_norm
-        else:
-            Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
-            beta = rho_g[gene_idx] * w_g[gene_idx] * lambda_ + (1 - rho_g[gene_idx]) * w_g[gene_idx] * lambda_ * Z_norm
+                lin2_clip=config.get("lin2_clip", None),
+                gate_mode=config.get("gate_mode", "hard_abs"),
+                gate_sharpness=config.get("gate_sharpness", 20.0),
+        )
+        
+        mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ 
+        sigma_sqrt = (1 - rho_g[gene_idx]) * torch.abs(w_g[gene_idx] * lambda_)
+        Z_norm = pyro.sample(f"Z_{gene_name}", dist.Normal(0, 1).expand([len(Z_gene)]).to_event(1)).to(data.device)
+        beta = mu + sigma_sqrt * Z_norm
         Gbeta = G_gene.matmul(beta)
         mean = Gbeta.view(num_indivs)
         simulated_parameters[gene_name]['beta'] = beta
         simulated_parameters[gene_name]['mu'] = mu
         simulated_parameters[gene_name]['mean'] = mean
+        
     return simulated_parameters

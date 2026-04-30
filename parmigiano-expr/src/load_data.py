@@ -13,6 +13,17 @@ def get_logger():
     return utils.get_logger()
 
 
+def variant_maf_series(G: pd.DataFrame) -> pd.Series:
+    """
+    Per-column MAF from dosage matrix G (samples × variants), matching
+    torch-side convention: round dosages, mean/2, mirror for MAF > 0.5.
+    """
+    arr = np.asarray(G.values, dtype=np.float64)
+    maf = np.round(arr).mean(axis=0) / 2.0
+    maf = np.where(maf > 0.5, 1.0 - maf, maf)
+    return pd.Series(maf, index=G.columns)
+
+
 def load_residualized_covariates(config, device):
     """
     Load covariates and expression, residualize expression on covariates.
@@ -51,7 +62,7 @@ def load_residualized_covariates(config, device):
         'oligodendrocyte_progenitor_cell', 'others', 'pericyte'
     ]
     covariates_scaled = utils.preprocess_covariates(covariates, covariate_cols)
-    tpm_scaled = utils.scale_tpm_matrix(tpm, median_filter=0, scale_center=config.get('scale_center', True))
+    tpm_scaled = utils.scale_tpm_matrix(tpm, median_filter=0)
     logger.info(f"Residualizing expression for {len(tpm_scaled)} genes...")
     residualized_Y = {}
     for idx, GENE in enumerate(tpm_scaled.index, 1):
@@ -68,75 +79,33 @@ def load_residualized_covariates(config, device):
 
 
 
-# simple model -- trying to get negative annotations
-def process_chrombpnet_dist_only(Z, config, logger):
-    """
-    Process chrombpnet and dist_to_TSS annotations for chrombpnet_dist_only mode.
-    """
-
-    if config.get('chrombpnet_dist_only', False):
-        logger.info(f"Keeping only chrombpnet and dist_to_TSS annotations...")
-    
-    logger.info(f"Taking mean of chrombpnet annotations...")
-    Z['chrombpnet'] = Z.filter(like="chrombpnet").mean(axis=1)
-    keep_columns = ['chrombpnet', 'dist_to_TSS']
-    Z = Z[keep_columns]
-
-    ANNOTATIONS_RAW1 = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/"
-    ANNOTATIONS_RAW2 = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/"
-    ANNOTATIONS_MINMAX = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_minmax/"
-
-    if config.get('chrombpnet_dist_only_cfg_num', 1) == 1:
-        assert config.get('annotation_dir', None) in [ANNOTATIONS_RAW1, ANNOTATIONS_RAW2], "chrombpnet_dist_only_cfg_num 1 requires raw annotations directory"
-        logger.info(f"Z-scoring chrombpnet...")
-        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
-        logger.info(f"Clipping chrombpnet at 10, keeping sign...")
-        Z['chrombpnet'] = np.clip(Z['chrombpnet'], -10, 10)
-        logger.info(f"Clipping dist_to_TSS at 0...")
-        Z['dist_to_TSS'] = Z['dist_to_TSS'].clip(lower=0)
-    elif config.get('chrombpnet_dist_only_cfg_num', 1) == 2:
-        assert config.get('annotation_dir', None) in [ANNOTATIONS_RAW1, ANNOTATIONS_RAW2], "chrombpnet_dist_only_cfg_num 2 requires raw annotations directory"
-        logger.info(f"Z-scoring chrombpnet...")
-        Z['chrombpnet'] = (Z['chrombpnet'] - Z['chrombpnet'].mean()) / Z['chrombpnet'].std()        
-        logger.info(f"Clipping chrombpnet at 10, keeping sign...")
-        Z['chrombpnet'] = np.clip(Z['chrombpnet'], -10, 10)
-        logger.info(f"Taking 1/dist_to_TSS and minmax scaling...")
-        Z['dist_to_TSS'] = 1/Z['dist_to_TSS']
-        Z['dist_to_TSS'] = (Z['dist_to_TSS'] - Z['dist_to_TSS'].min()) / (Z['dist_to_TSS'].max() - Z['dist_to_TSS'].min())
-    elif config.get('chrombpnet_dist_only_cfg_num', 1) == 3:
-        assert config.get('annotation_dir', None) == ANNOTATIONS_MINMAX, "chrombpnet_dist_only_cfg_num 3 requires minmax scaled annotations directory"
-        # already loaded minmax scaled annotations
-    else:
-        raise ValueError(f"chrombpnet_dist_only_cfg_num must be 1, 2, or 3, got {config.get('chrombpnet_dist_only_cfg_num', 1)}")
-    
-    return Z
-
-
 def process_annotations(Z, config, logger):
     """
     Process annotations.
+    Assumes annotations are already scaled.
+    Clips dist_to_TSS to 0.
+    Subsets to certain annotations only.
+    Averages over cell types if needed.
     """
+
     logger.info(f"Processing annotations...")
     annotations = config.get('annotations')
-    Z_chrombonet_dist = process_chrombpnet_dist_only(Z.copy(), config, logger)
     Z_cols = []
     for annotation in annotations:
         logger.info(f"Processing annotation: {annotation}")
-        if annotation == 'chrombpnet' or annotation == 'dist_to_TSS':
-            continue
+        if annotation == 'chrombpnet':
+            Z_cols.append('chrombpnet_ATAC')
+            Z['chrombpnet_ATAC'] = Z.filter(like="chrombpnet_ATAC").mean(axis=1) #avergae over cell types (assume already scaled)
+            Z_cols.append('chrombpnet_H3K27ac')
+            Z['chrombpnet_H3K27ac'] = Z.filter(like="chrombpnet_H3K27ac").mean(axis=1) #avergae over cell types (assume already scaled)
+        elif annotation == 'dist_to_TSS':
+            Z_cols.append('dist_to_TSS')
+            Z['dist_to_TSS'] = Z['dist_to_TSS'].clip(lower=0)
         elif annotation == 'ABC':
             Z_cols.append('ABC')
-            Z['ABC'] = Z.filter(like="ABC").mean(axis=1)
+            Z['ABC'] = Z.filter(like="ABC").mean(axis=1) #avergae over cell types 
             # these should be positive
             assert Z['ABC'].min() >= 0, "ABC annotations should be positive"
-        elif annotation == 'CADD_raw':
-            Z_cols.append('CADD_raw')
-            # z-scale
-            Z['CADD_raw'] = (Z['CADD_raw'] - Z['CADD_raw'].mean()) / Z['CADD_raw'].std()
-        elif annotation == 'Eigen-raw':
-            # z-scale
-            Z_cols.append('Eigen-raw')
-            Z['Eigen-raw'] = (Z['Eigen-raw'] - Z['Eigen-raw'].mean()) / Z['Eigen-raw'].std()
         elif annotation == 'enformer':
             # average _TF_delta_min over cell types
             Z_cols.append('enformer_min')
@@ -144,11 +113,14 @@ def process_annotations(Z, config, logger):
             # average _TF_delta_max over cell types
             Z_cols.append('enformer_max')
             Z['enformer_max'] = Z.filter(like="_TF_delta_max").mean(axis=1)
-        elif annotation in ['lof', 'missense', 'splice', 'MAP20', 'alphamissense']:
+        elif annotation.startswith('gnomAD'):
+            Z_cols.append('gnomAD_genomes_POPMAX_AF')
+        else:
+            if annotation not in Z.columns:
+                logger.warning(f"Annotation {annotation} not found in Z columns. Skipping.")
+                continue
             Z_cols.append(annotation)
-            Z[annotation] = Z.filter(like=annotation).mean(axis=1)
     Z = Z[Z_cols]
-    Z = pd.concat([Z_chrombonet_dist, Z], axis=1)
     return Z
         
 
@@ -170,7 +142,6 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
         - variant_ids_Z: list of raw variant ID strings from Z index (chr:pos_ref_alt format)
     """
     logger = get_logger()
-    sample_col = config.get('sample_col', 'SampleID')
 
     if genotype_dir is None:
         genotype_dir = config.get('genotype_dir')
@@ -186,6 +157,7 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
         Z = pd.read_csv(config['annotation_path'], sep='\t', index_col=0)
         variant_ids_G = G.columns.tolist()
         variant_ids_Z = Z.index.tolist()
+        assert set(variant_ids_G) == set(variant_ids_Z), "Variant IDs in G and Z do not match"
 
     # Option 2: per-gene files
     elif genotype_dir is not None and annotation_dir is not None:
@@ -212,16 +184,12 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
                 variant_ids_Z.extend(z.index.tolist())
 
                 if len(g.columns) != len(z.index):
-                    logger.warning(f"{gene}: genotype variants ({len(g.columns)}) "
-                                   f"!= annotation rows ({len(z.index)})... subsetting to intersection")
-                    # Remove the IDs we just added since we're skipping
+                    logger.error(f"{gene}: genotype variants ({len(g.columns)}) "
+                                   f"!= annotation rows ({len(z.index)})... skipping gene")
+                    # remove the variant ids that we just added
                     del variant_ids_G[-len(g.columns):]
                     del variant_ids_Z[-len(z.index):]
-                    # dont error, just subset to intersection and reorder Z to match G column order
-                    intersection = set(g.columns) & set(z.index)
-                    z = z.loc[intersection]
-                    g = g[intersection]
-                    
+                    continue
 
                 # Prefix variant names with gene for uniqueness
                 g.columns = [f"{gene}_{col}" for col in g.columns]
@@ -259,37 +227,18 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
         z_only = set(Z.index) - set(G.columns)
         logger.error(f"Variants in G but not Z: {g_only}")
         logger.error(f"Variants in Z but not G: {z_only}")
-        # dont error, just subset to intersection and reorder Z to match G column order
-        intersection = set(G.columns) & set(Z.index)
-        Z = Z.loc[intersection]
-        G = G[intersection]
-        #raise ValueError("Genotype columns must match annotation rows")
+        raise ValueError("Genotype columns must match annotation rows")
 
     Z = Z.loc[G.columns]  # reorder Z to match G column order
 
     # Feature engineering
     logger.info(f"Feature engineering for annotations...")
-    if config.get('chrombpnet_dist_only', False): # only two annotations (chrombpnet and dist_to_TSS)
-        Z = process_chrombpnet_dist_only(Z, config, logger)
-
+  
     if config.get('annotations', []):
         Z = process_annotations(Z, config, logger)
     
-    else: # keep all annotations 
-        logger.info(f"Dropping promoter_3000 and promoter_2000 annotations...")
-        Z = Z.drop(['promoter_3000', 'promoter_2000'], axis=1, errors='ignore')
-        log_cols = Z.filter(like="log_counts").columns
-        logger.info(f"Taking max of chrombpnet og_counts annotations...")
-        Z["chromBPnet"] = Z[log_cols].max(axis=1)
-        Z = Z.drop(columns=log_cols)
-        enformer_min = Z.filter(like="TF_delta_min").columns
-        logger.info(f"Taking max of TF_delta_min annotations...")
-        Z["TF_delta_min"] = Z[enformer_min].max(axis=1)
-        Z = Z.drop(columns=enformer_min)
-        enformer_max = Z.filter(like="TF_delta_max").columns
-        logger.info(f"Taking max of TF_delta_max annotations...")
-        Z["TF_delta_max"] = Z[enformer_max].max(axis=1)
-        Z = Z.drop(columns=enformer_max)
+    else:
+        logger.warning("No annotations provided. Using all annotations.")
 
     G, Z = utils.impute_missing(G, Z)
     logger.info(f"Loaded {G.shape[0]} individuals, {G.shape[1]} variants")
@@ -409,13 +358,28 @@ def load_brr_results(config):
         ens = gene.split("/")[1]
         result_file = os.path.join(brr_results_dir, chr + ".tsv")
         beta_file = os.path.join(brr_results_dir, 'betas', gene + ".tsv.gz")
-        brr_results['betas'][gene.split("/")[1]] = pd.read_csv(beta_file, sep="\t", index_col=0) # gene name without chr/ prefix to match G and Z matrices
+        gene_key = gene.split("/")[1]
+
+        # Missing BRR files should not crash training; downstream warm start can default to zero.
+        if not os.path.exists(beta_file):
+            logger.warning(f"Missing BRR beta file for {gene}; continuing without BRR beta warm start for this gene.")
+            continue
+        if not os.path.exists(result_file):
+            logger.warning(f"Missing BRR summary file for {gene} at {result_file}; skipping BRR for this gene.")
+            continue
+
+        brr_results['betas'][gene_key] = pd.read_csv(beta_file, sep="\t", index_col=0) # gene name without chr/ prefix to match G and Z matrices
         brr_df = pd.read_csv(result_file, sep="\t", index_col=0)
-        brr_results['alphas'][gene.split("/")[1]] = brr_df.loc[ens]['alpha']
+        if ens in brr_df.index:
+            brr_results['alphas'][gene_key] = brr_df.loc[ens]['alpha']
+        else:
+            logger.warning(f"Missing alpha row for {gene} in {result_file}; skipping BRR alpha for this gene.")
 
     logger.info(f"Total number of betas: {sum(len(brr_results['betas'][gene_name]) for gene_name in brr_results['betas'])}")
     logger.info(f"Total number of alphas: {len(brr_results['alphas'])}") # should be == number of genes
-    assert len(config['genes']) == len(brr_results['betas']) == len(brr_results['alphas']), "Number of genes must match between config and BRR results"
+    if len(brr_results['betas']) == 0:
+        logger.warning("No BRR beta files were found for requested genes; proceeding without BRR warm starts.")
+        return None
  
     return brr_results
 
@@ -439,10 +403,11 @@ class DataTensors:
     num_genes: int = 0
     brr_betas: dict = None        # Bayesian Ridge Regression betas (gene_name -> pandas DataFrame)
     brr_alphas: dict = None        # Bayesian Ridge Regression alphas (gene_name -> float)
+    variant_column_names: list = field(default_factory=list)  # G columns after BRR / MAF filters
     # Per-gene specific: loaded externally from tauT files and alpha_dict
-    tau: torch.Tensor = None       # Annotation weights (Q,) - set externally in per-gene mode
+    tau1: torch.Tensor = None       # Annotation weights (Q,) - set externally in per-gene mode
+    tau2: torch.Tensor = None       # Annotation weights (Q,) - set externally in per-gene mode
     threshold: torch.Tensor = None # Filter threshold - set externally in per-gene mode
-    std: torch.Tensor = None       # Observation noise std (from alpha_dict) - per-gene mode
 
     def __post_init__(self):
         self.num_anno = self.Z.shape[1]
@@ -461,10 +426,30 @@ class DataTensors:
         return G_gene, Z_gene, maf_weights_gene
 
     @staticmethod
-    def from_pandas(G, Z, X, Y, brr_betas, brr_alphas, device, config):
+    def from_pandas(
+        G,
+        Z,
+        X,
+        Y,
+        brr_betas,
+        brr_alphas,
+        device,
+        config,
+        train_G_for_maf_filter=None,
+        forced_variant_columns=None,
+    ):
         """
         Create DataTensors from pandas DataFrames.
         G columns must follow the pattern GENE_variantID (gene prefix separated by _).
+
+        Parameters
+        ----------
+        train_G_for_maf_filter : pd.DataFrame, optional
+            Training genotypes (same variant columns as G). When ``common_variants_only``
+            is True, MAF is computed on this frame so test tensors do not use test-set MAF.
+        forced_variant_columns : list, optional
+            If set (e.g. from a training DataTensors run), subset to exactly these columns
+            after BRR sync so train/test share the same variant set.
         """
         logger = get_logger()
         assert set(X.index) == set(G.index), "Sample IDs must match between covariates and genotype files"
@@ -474,25 +459,63 @@ class DataTensors:
 
         # TODO: make this part more efficient 
 
-        # sync G and Z matrices with BRR results (keep only variants for which we have betas)
+        # Keep all variants; BRR is only used for warm initialization downstream.
+        # Variants without BRR betas are initialized to zero there.
         if brr_betas is not None:
-            keep_variants = []
-            logger.info(f"Syncing G and Z matrices with BRR results (keep only variants for which we have betas)")
-            # G columns: Variant ids --> GENE_chr:pos
-            # BRR betas: Variant ids --> chr:pos_a1_a2
+            n_total = len(G.columns)
+            n_matched = 0
+            logger.info("Checking BRR coverage over genotype variants (without dropping unmatched variants)")
+            # G columns: GENE_chr:pos
+            # BRR betas index: chr:pos_a1_a2
             for variant_id in tqdm(G.columns):
                 gene = variant_id.split('_')[0]
                 chr, pos = variant_id.split('_')[1].split(':') 
+                if gene not in brr_betas:
+                    continue
                 brr_variants = brr_betas[gene].index.tolist()
                 brr_variants_chr_pos = [variant.split('_')[0] for variant in brr_variants]
                 brr_variant_pos = [variant.split(':')[1].split('_')[0] for variant in brr_variants]
                 # shouldnt be a problem. if it is, need to be more careful matching up variants by id
                 assert len(brr_variant_pos) == len(set(brr_variant_pos)), "Duplicate variant positions in BRR results" 
                 if chr + ":" + pos in brr_variants_chr_pos:
-                    keep_variants.append(variant_id)
-            # subset G and Z matrices to keep only variants for which we have betas
-            G = G[keep_variants]
-            Z = Z.loc[keep_variants]
+                    n_matched += 1
+            logger.info(
+                f"BRR coverage: {n_matched}/{n_total} variants matched; "
+                f"{n_total - n_matched} unmatched variants will be kept and zero-initialized."
+            )
+
+        if forced_variant_columns is not None:
+            use_cols = [c for c in forced_variant_columns if c in G.columns]
+            missing = set(forced_variant_columns) - set(G.columns)
+            if missing:
+                logger.warning(
+                    f"forced_variant_columns: {len(missing)} variants not present in G after BRR sync; "
+                    f"keeping {len(use_cols)}/{len(forced_variant_columns)}"
+                )
+            G = G[use_cols]
+            Z = Z.loc[use_cols]
+
+        maf_thr = config.get("maf_threshold", None)
+        # Accept unset/null-like string values from CLI/YAML without crashing.
+        if maf_thr is not None and not (isinstance(maf_thr, str) and maf_thr.strip().lower() in {"", "none", "null"}):
+            thr = float(maf_thr)
+            ref = train_G_for_maf_filter if train_G_for_maf_filter is not None else G
+            shared = [c for c in G.columns if c in ref.columns]
+            if len(shared) < len(G.columns):
+                logger.warning(
+                    f"common_variants_only: reference genotypes missing {len(G.columns) - len(shared)} columns; "
+                    "using intersection for MAF."
+                )
+            ref_maf = ref.loc[:, [c for c in shared if c in ref.columns]]
+            maf = variant_maf_series(ref_maf)
+            keep_cols = maf[maf >= thr].index.tolist()
+            dropped = len(shared) - len(keep_cols)
+            G = G[keep_cols]
+            Z = Z.loc[keep_cols]
+            logger.info(
+                f"MAF >= {thr} on training reference -> kept {len(keep_cols)} variants "
+                f"({dropped} dropped as rare/low-MAF)."
+            )
             
         # Parse gene names and indices from column names (GENE_variantID)
         gene_indices = {}
@@ -513,8 +536,8 @@ class DataTensors:
             gene_indices[current_gene] = (start_idx, len(G.columns))
             gene_names.append(current_gene)
 
-
         G_tensor = torch.as_tensor(G.values, dtype=torch.float32, device=device)
+        variant_column_names = list(G.columns)
 
         return DataTensors(
             G=G_tensor,
@@ -530,7 +553,8 @@ class DataTensors:
             brr_alphas=brr_alphas,
             gene_indices=gene_indices,
             gene_names=gene_names,
-            device=device
+            device=device,
+            variant_column_names=variant_column_names,
         )
 
 # ---------------------------------------------------------------------------
@@ -538,44 +562,140 @@ class DataTensors:
 # ---------------------------------------------------------------------------
 
 def get_chr_genes(config):
-    path = os.path.join(config['genotype_dir'], config['chromosome'])
+    # for pergene mode, we need to load the genes for the specific chromosome
+    logger = get_logger()
+    genopath = os.path.join(config['genotype_dir'], f"chr{config['chromosome']}")
+    anopath = os.path.join(config['annotation_dir'], f"chr{config['chromosome']}")
     genes = []
-    for i in os.listdir(path):
-        if i.endswith("_genotypes.tsv.gz"):
-            genes.append(config['chromosome'] + "/" + i.split("_")[0])
+    for i in os.listdir(anopath):
+        if i.endswith("_annotations.tsv.gz") and os.path.exists(os.path.join(genopath, i.replace("_annotations.tsv.gz", "_genotypes.tsv.gz"))):
+            genes.append(f"chr{config['chromosome']}/{i.split('_')[0]}")
+    logger.info(f"Found {len(genes)} genes for chromosome {config['chromosome']}")
     return genes
 
 
 # ---------------------------------------------------------------------------
-# Load pre-computed tau and threshold
+# Load pre-computed tau and threshold (joint outputs → per-gene stage)
 # ---------------------------------------------------------------------------
 
-def load_tau_T(config, device, Z):
-    """Load tau weights and filter threshold from a directory of per-run files.
+def read_tau_T_csv(csv_path: str) -> pd.DataFrame:
+    """Read ``tau_T.csv`` as written by ``save_results`` (``index=False``)."""
+    return pd.read_csv(csv_path)
+
+
+def discover_joint_run_directories(joint_root: str):
     """
-    logger = utils.get_logger()
-    path = config['tauT_path']
+    Return directories containing ``tau_T.csv`` for averaging.
 
-    def load_runs(filename):
-        dfs = []
-        for iteration in os.listdir(path):
-            if "run" not in iteration: continue
-            try:
-                dfs.append(pd.read_csv(os.path.join(path, iteration, filename), index_col = 0))
-            except Exception as e:
-                print(f"Issue loading {filename} from {iteration}: {e}")
-        return pd.concat(dfs, axis=0)
+    - If ``joint_root/run_*/tau_T.csv`` exist, return those ``run_*`` paths sorted by run index.
+    - Else if ``joint_root/tau_T.csv`` exists, return ``[joint_root]``.
+    """
+    joint_root = os.path.abspath(joint_root)
+    if not os.path.isdir(joint_root):
+        raise FileNotFoundError(f"joint output directory not found: {joint_root}")
 
-    if os.path.exists(os.path.join(path, "run_1", "tau_T.csv")):
-        tauT_df = load_runs("tau_T.csv")
-        threshold = torch.as_tensor(float(tauT_df['Filter Threshold'].values[0]), dtype=torch.float32, device=device)
-        if config.get('tau12', False): # nonlinear mode
-            tau1 = torch.as_tensor(tauT_df['Tau1'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
-            tau2 = torch.as_tensor(tauT_df['Tau2'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
-            return {'tau1': tau1, 'tau2': tau2, 'threshold': threshold}
-        else:
-            tau = torch.as_tensor(tauT_df['Tau'].groupby("annotation", sort = False).mean().values, dtype=torch.float32, device=device)
-            return {'tau': tau, 'threshold': threshold}
+    run_dirs = []
+    for name in sorted(os.listdir(joint_root)):
+        if not name.startswith("run_"):
+            continue
+        suffix = name.split("_", 1)[-1]
+        if not suffix.isdigit():
+            continue
+        rd = os.path.join(joint_root, name)
+        if os.path.isdir(rd) and os.path.isfile(os.path.join(rd, "tau_T.csv")):
+            run_dirs.append((int(suffix), rd))
+    run_dirs = [rd for _, rd in sorted(run_dirs, key=lambda x: x[0])]
 
-    return None
+    if run_dirs:
+        return run_dirs
+    if os.path.isfile(os.path.join(joint_root, "tau_T.csv")):
+        return [joint_root]
+    raise FileNotFoundError(
+        f"No tau_T.csv found under {joint_root} (expected run_*/tau_T.csv or a single tau_T.csv)."
+    )
+
+
+def aggregate_tau_t_from_joint_runs(joint_root: str) -> pd.DataFrame:
+    """
+    Load ``tau_T.csv`` from each joint refit and average ``Filter Threshold`` and τ columns.
+
+    Assumes compatible row ordering across runs (same joint config). Uses nanmean for
+    ``Tau2`` when an ``intercept`` row carries NaN in ``Tau2`` (nonlinear + tau1 intercept).
+    """
+    logger = get_logger()
+    run_dirs = discover_joint_run_directories(joint_root)
+    dfs = [read_tau_T_csv(os.path.join(rd, "tau_T.csv")) for rd in run_dirs]
+    logger.info(f"Averaging τ / T over {len(dfs)} joint run(s) from {joint_root}")
+
+    th = float(np.mean([float(d["Filter Threshold"].iloc[0]) for d in dfs]))
+
+    ann = dfs[0]["Annotation"].astype(str)
+    assert "intercept" == ann[0], "intercept must be the first annotation"
+    tau1_stack = np.stack([d["Tau1"].to_numpy(dtype=np.float64) for d in dfs], axis=0)
+    tau2_stack = np.stack([d["Tau2"].to_numpy(dtype=np.float64) for d in dfs], axis=0)
+    tau1_mean = tau1_stack.mean(axis=0)
+    tau2_mean = np.nanmean(tau2_stack, axis=0)
+    assert np.isnan(tau2_mean[0]), "intercept for tau2 should be NaN"
+    out = pd.DataFrame(
+        {
+            "Annotation": ann,
+            "Tau1": tau1_mean,
+            "Tau2": tau2_mean,
+            "Filter Threshold": th,
+        }
+    )
+    return out
+
+
+def _tau_vectors_from_summary_df(mean_df: pd.DataFrame):
+    """
+    From a single summary ``tau_T`` dataframe, return numpy vectors for the generative model.
+
+    Returns
+    -------
+    tau1 : ndarray or None  (includes intercept coefficient first when applicable)
+    tau2 : ndarray or None  (length = number of annotation columns in Z, no intercept)
+    """
+    tau1 = mean_df["Tau1"].to_numpy(dtype=np.float32)
+    ann = mean_df["Annotation"].astype(str)
+    assert ann.str.lower().eq("intercept").any(), "expecting intercept for tau1"
+    mask = ~ann.str.lower().eq("intercept")
+    tau2 = mean_df.loc[mask, "Tau2"].to_numpy(dtype=np.float32)
+    return tau1, tau2
+
+
+def load_tau_threshold(config):
+    """
+    Load (or average over joint refits) global τ and threshold T.
+
+    Uses ``config['joint_output_dir']`` as the directory that either
+    contains ``run_*/tau_T.csv`` or a flat ``tau_T.csv``.
+
+    Returns
+    -------
+    mean_df : pd.DataFrame
+    threshold : float
+    tau1 : ndarray or None
+    tau2 : ndarray or None
+    """
+    root = config.get("joint_output_dir")
+    if not root:
+        raise ValueError("config must set joint_output_dir to load τ and T from joint outputs.")
+
+    mean_df = aggregate_tau_t_from_joint_runs(root)
+    th = float(mean_df["Filter Threshold"].iloc[0])
+    tau1, tau2 = _tau_vectors_from_summary_df(mean_df)
+    return mean_df, th, tau1, tau2
+
+
+def load_tau_threshold_tensors(config, device):
+    """Same as ``load_tau_threshold`` but returns torch tensors in a dict for training code."""
+    _mean_df, th, tau1, tau2 = load_tau_threshold(config)
+    threshold = torch.as_tensor(th, dtype=torch.float32, device=device)
+    return {
+            "tau1": torch.as_tensor(tau1, dtype=torch.float32, device=device),
+            "tau2": torch.as_tensor(tau2, dtype=torch.float32, device=device),
+            "threshold": threshold,
+        }
+    
 

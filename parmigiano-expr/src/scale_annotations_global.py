@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import json
+from tqdm import tqdm
 
 ANNOTATIONS_DIR_RAW = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw"
 ANNOTATIONS_DIR_SCALED = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled"
-CHROMBPNET_ZSCORED_DIR = "/gpfs/commons/groups/knowles_lab/data/ADSP_reguloML/ADSP_vcf/58K_preview_compact/rare_variants/chrombpnet/variant_peak_pairs_scored/zscore_normalized"
 PLOT_DIR = "/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/plots"
 
 annotations = ['chr', 'pos', 'MAP20', 'phyloP17way_primate', 'phyloP30way_mammalian', 'phastCons17way_primate_rankscore', 'phastCons30way_mammalian', 
@@ -21,6 +22,10 @@ annotations = ['chr', 'pos', 'MAP20', 'phyloP17way_primate', 'phyloP30way_mammal
                 'log_counts_diff_chrombpnet_astrocyte', 'log_counts_diff_chrombpnet_neuron', 'log_counts_diff_chrombpnet_oligodendrocyte', 
                 'alphamissense', 'splice', 'ABC_microglia', 'ABC_neuron', 'ABC_oligodendrocyte', 'ABC_astrocyte', 'dist_to_TSS']
                 
+
+def _bytes_to_gb(n_bytes):
+    return n_bytes / (1024 ** 3)
+
 
 def minmax_scale_column(column):
     """
@@ -48,58 +53,91 @@ def load_full_annotation_matrix(annotations_dir):
     all_annotations = []
     for chrom in range(1, 23):
         print(f"Loading annotations for chromosome {chrom} ({len(os.listdir(os.path.join(annotations_dir, f'chr{chrom}')))} files)...")
-        for file in os.listdir(os.path.join(annotations_dir, f'chr{chrom}')):
+        chrom_annotations = []
+        for file in tqdm(os.listdir(os.path.join(annotations_dir, f'chr{chrom}')), desc=f"Loading annotations for chromosome {chrom}"):
             if file.endswith('.tsv.gz'):
                 gene = file.split('_')[0]
                 annotations = pd.read_csv(os.path.join(annotations_dir, f'chr{chrom}', file), sep='\t', compression='gzip')
                 assert 'variant_id' in annotations.columns, f"variant_id column not found in {file}"
                 # add gene column
                 annotations['gene'] = gene
-                all_annotations.append(annotations)
-    return pd.concat(all_annotations)
+                chrom_annotations.append(annotations)
+
+        if chrom_annotations:
+            chrom_df = pd.concat(chrom_annotations, ignore_index=True)
+            chrom_mem_gb = _bytes_to_gb(chrom_df.memory_usage(deep=True).sum())
+            print(f"\tchr{chrom} loaded matrix shape: {chrom_df.shape}, memory: {chrom_mem_gb:.2f} GB")
+            all_annotations.append(chrom_df)
+
+    full_df = pd.concat(all_annotations, ignore_index=True)
+    total_mem_gb = _bytes_to_gb(full_df.memory_usage(deep=True).sum())
+    print(f"Full loaded matrix memory usage: {total_mem_gb:.2f} GB")
+    return full_df
 
 
 def scale_annotations_global(annotations_matrix):
     """
     Scale annotations globally.
     """
+    minmax = dict()
+    zscore = dict()
+
     assert 'variant_id' in annotations_matrix.columns, f"variant_id column not found in annotations_matrix"
     for column in annotations_matrix.columns:
-        if column in ['variant_id', 'chr', 'pos','dist_to_TSS']:
-            continue
-        elif column.startswith('chrombpnet'): # already scaled in map_annotate_variants.py
+        if column in ['gene','variant_id', 'chr', 'pos']:
             continue
         elif 'ABC_' in column:
             continue
         elif 'gnomAD_genomes_POPMAX_AF' == column:
             continue
         else:
+            print(f"Scaling {column}...")
             values = annotations_matrix[column].values
+            # clip dist_to_TSS at 0
+            if column == 'dist_to_TSS':
+                print(f"\tclipping at 0... (before: min: {np.min(values)} max: {np.max(values)})")
+                values = clip_column(values, 0, None)
             # if negative values --> zcale
             if np.any(values < 0):
-                print(f"zscoring {column}...")
-                print(f"\tmean: {np.mean(annotations_matrix[column])}")
-                print(f"\tstd: {np.std(annotations_matrix[column])}")
-                annotations_matrix[column] = zscore_scale_column(annotations_matrix[column])
+                zscore[column] = {
+                    'mean': np.mean(values),
+                    'std': np.std(values)
+                }
+                print(f"\tzscoring... mean: {np.mean(values)} std: {np.std(values)}")
+                if column.startswith('chrombpnet'): # already scaled in map_annotate_variants.py
+                    continue
+                annotations_matrix[column] = zscore_scale_column(values)
             # if positive values --> minmax scale
             else:
-                print(f"minmax scaling {column}...")
-                print(f"\tmin: {np.min(annotations_matrix[column])}")
-                print(f"\tmax: {np.max(annotations_matrix[column])}")
-                annotations_matrix[column] = minmax_scale_column(annotations_matrix[column])
+                minmax[column] = {
+                    'min': np.min(values),
+                    'max': np.max(values)
+                }
+                print(f"\tminmax scaling... min: {np.min(values)} max: {np.max(values)}")
+                annotations_matrix[column] = minmax_scale_column(values)
     annotations_matrix = annotations_matrix.set_index('variant_id')
-    return annotations_matrix
+    return annotations_matrix, minmax, zscore
 
 def save_per_gene_annotations(annotations_matrix):
     """
     Save per-gene annotations.
     """
+    if 'variant_id' not in annotations_matrix.columns:
+        if annotations_matrix.index.name == 'variant_id':
+            annotations_matrix = annotations_matrix.reset_index()
+        else:
+            raise KeyError("variant_id not found as a column or index name.")
+
     for chrom in range(1, 23):
+        print(f"Saving per-gene annotations for chromosome {chrom}...")
+        os.makedirs(os.path.join(ANNOTATIONS_DIR_SCALED, f'chr{chrom}'), exist_ok=True)
         chrom_annotations = annotations_matrix[annotations_matrix['chr']==chrom]
-        for gene in chrom_annotations['gene'].unique():
-            gene_annotations = chrom_annotations[chrom_annotations['gene']==gene]
+        for gene in tqdm(chrom_annotations['gene'].unique(), desc=f"Saving per-gene annotations for chromosome {chrom}"):
+
+            gene_annotations = chrom_annotations[chrom_annotations['gene']==gene].copy()
             gene_annotations = gene_annotations.drop(columns=['gene', 'chr', 'pos'])
             # save tsv
+            gene_annotations.set_index('variant_id', inplace=True)
             gene_annotations.to_csv(os.path.join(ANNOTATIONS_DIR_SCALED, f'chr{chrom}', f'{gene}_annotations.tsv.gz'), sep='\t', compression='gzip', index=True)
             # save tensor
             # gene_annotations_tensor = torch.tensor(gene_annotations.values)
@@ -120,9 +158,15 @@ def plot_distribution_of_annotations(annotations_matrix):
 
 if __name__ == "__main__":
     annotations_matrix = load_full_annotation_matrix(ANNOTATIONS_DIR_RAW)
+    print(f"Full annotations matrix shape: {annotations_matrix.shape}")
     # plot distirbution of each annotation column -- pre scaling
-    plot_distribution_of_annotations(annotations_matrix)
-    annotations_matrix = scale_annotations_global(annotations_matrix)
+    # plot_distribution_of_annotations(annotations_matrix)
+    annotations_matrix, minmax, zscore = scale_annotations_global(annotations_matrix)
     # plot distirbution of each annotation column -- post scaling
-    plot_distribution_of_annotations(annotations_matrix)
+    # plot_distribution_of_annotations(annotations_matrix)
     save_per_gene_annotations(annotations_matrix)
+    # save minmax and zscore dictionaries
+    with open(os.path.join(ANNOTATIONS_DIR_SCALED, 'minmax.json'), 'w') as f:
+        json.dump(minmax, f, indent=4)
+    with open(os.path.join(ANNOTATIONS_DIR_SCALED, 'zscore.json'), 'w') as f:
+        json.dump(zscore, f, indent=4)

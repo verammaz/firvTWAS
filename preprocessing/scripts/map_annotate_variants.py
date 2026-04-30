@@ -549,7 +549,9 @@ def annotate(gene_pos, bim, ref_table=None):
         # Calculate log10 of absolute distance, adding small epsilon to avoid log10(0) = -inf
         # When distance is 0 (variant at TSS), log10(0 + epsilon) gives a small negative value
         anno['dist_to_TSS'] = np.log10(np.abs(anno['dist_to_TSS']) + 1e-10)
-
+        # clip dist_to_TSS at 0
+        anno['dist_to_TSS'] = np.clip(anno['dist_to_TSS'], 0, None)
+        
         if len(anno) != 0: # dont save empty df
             var_ids = anno.index.tolist()
             with open(os.path.join(ANNOTATIONS_DIR, f"{gene}_var_ids.txt"), "w") as f:

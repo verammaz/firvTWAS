@@ -6,25 +6,7 @@ import torch
 import yaml
 import pickle
 
-def simulations_to_samples(simulated_parameters, gene_names):
-    """
-    Convert simulate_expression output into beta_samples/mu_samples dicts
-    compatible with save_results format (each value is array of shape [1, num_variants]).
-    """
-    beta_samples_sim = {}
-    mu_samples_sim = {}
-    for gene_name in gene_names:
-        if gene_name not in simulated_parameters:
-            continue
-        beta = simulated_parameters[gene_name]['beta']
-        mu   = simulated_parameters[gene_name]['mu']
-        # Add a sample dimension so mean/std calls in save_results work (shape: [1, num_variants])
-        beta_samples_sim[gene_name] = beta.detach().cpu().numpy()[None, :]
-        mu_samples_sim[gene_name]   = mu.detach().cpu().numpy()[None, :]
-    return beta_samples_sim, mu_samples_sim
-
-
-def _tau_labels_for_nonlinear(annotations, tau1_values, tau2_values):
+def _tau_labels(annotations, tau1_values, tau2_values):
     """
     Build row labels for nonlinear tau outputs.
     Supports tau1 having an optional intercept while tau2 does not.
@@ -42,52 +24,47 @@ def _tau_labels_for_nonlinear(annotations, tau1_values, tau2_values):
         f"Unexpected nonlinear tau dimensions: tau1={n_tau1}, tau2={n_tau2}, annotations={n_anno}"
     )
     
-def save_results(losses, times, posterior_stats, config, annotations, 
+def save_results(output_dir, losses, times, posterior_stats, annotations, 
                  data = None,
-                 simulations=None,
-                 beta_samples=None, mu_samples=None,
+                 beta_samples=None, 
+                 mu_samples=None,
+                 mean_samples=None,
                  train_r2=None, test_r2=None,
                  tau_history=None,
                  variant_ids_G=None, variant_ids_Z=None,
                  gene_indices=None,
                  save_full_samples=False):
 
-    os.makedirs(config['output_dir'], exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # --- Basic training diagnostics ---
-    np.savetxt(os.path.join(config['output_dir'], "losses.txt"), losses)
-    np.savetxt(os.path.join(config['output_dir'], "times.txt"), times)
+    np.savetxt(os.path.join(output_dir, "losses.txt"), losses)
+    np.savetxt(os.path.join(output_dir, "times.txt"), times)
 
     # --- Tau and threshold summary ---
-    mode = "linear" if not config.get('tau12', False) else "nonlinear"
-    if mode == "linear":
-        try:
-            tau_df = pd.DataFrame()
-            tau_df['Annotation'] = annotations
-            tau_df['Tau'] = posterior_stats['tau']['mean'][0]
-            tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
-            tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
-        except Exception as e:
-            print(f"Could not save tau_T.csv: {e}")
-    else:
-        try:
-            tau1_vals = np.asarray(posterior_stats['tau1']['mean'][0]).ravel()
-            tau2_vals = np.asarray(posterior_stats['tau2']['mean'][0]).ravel()
-            row_labels, has_tau1_intercept = _tau_labels_for_nonlinear(
-                annotations, tau1_vals, tau2_vals
-            )
+    try:
+        required_tau_keys = {"tau1", "tau2", "threshold"}
+        if not required_tau_keys.issubset(set(posterior_stats.keys())):
+            raise KeyError("tau1/tau2/threshold missing from posterior_stats")
 
-            tau_df = pd.DataFrame()
-            tau_df['Annotation'] = row_labels
-            tau_df['Tau1'] = tau1_vals
-            tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
-            if has_tau1_intercept:
-                tau_df['Tau2'] = np.concatenate(([np.nan], tau2_vals))
-            else:
-                tau_df['Tau2'] = tau2_vals
-            tau_df.to_csv(os.path.join(config['output_dir'], "tau_T.csv"), index=False)
-        except Exception as e:
-            print(f"Could not save tau_T.csv: {e}")
+        tau1_vals = np.asarray(posterior_stats['tau1']['mean'][0]).ravel()
+        tau2_vals = np.asarray(posterior_stats['tau2']['mean'][0]).ravel()
+        row_labels, has_tau1_intercept = _tau_labels(
+            annotations, tau1_vals, tau2_vals
+        )
+
+        tau_df = pd.DataFrame()
+        tau_df['Annotation'] = row_labels
+        tau_df['Tau1'] = tau1_vals
+        tau_df['Filter Threshold'] = posterior_stats['threshold']['mean'][0]
+        if has_tau1_intercept:
+            tau_df['Tau2'] = np.concatenate(([np.nan], tau2_vals))
+        else:
+            tau_df['Tau2'] = tau2_vals
+        tau_df.to_csv(os.path.join(output_dir, "tau_T.csv"), index=False)
+    except Exception:
+        # Expected for workflows that use fixed tau/T loaded from disk (e.g. per-gene mode).
+        pass
 
     # --- w_g and rho_g ---
     try:
@@ -107,64 +84,49 @@ def save_results(losses, times, posterior_stats, config, annotations,
                         f'{param}_mean': mean_vals.tolist(),
                         f'{param}_std': std_vals.tolist(),
                     })
-                    df.to_csv(os.path.join(config['output_dir'], f"{param}.csv"), index=False)
+                    df.to_csv(os.path.join(output_dir, f"{param}.csv"), index=False)
     
         if scalar_stats:
             pd.DataFrame([scalar_stats]).to_csv(
-                os.path.join(config['output_dir'], "w_g_rho_g.csv"), index=False
+                os.path.join(output_dir, "w_g_rho_g.csv"), index=False
             )
     except Exception as e:
-        print(f"Could not save w_g_rho_g.csv: {e}")
+        print(f"Could not save w_g and/or rho_g.csv: {e}")
 
     # --- Tau history across epochs ---
     if tau_history is not None:
-        if mode == "nonlinear": # have two taus 
-            valid_tau_history = [tau for tau in tau_history if tau[0] is not None and tau[1] is not None]
-            if len(valid_tau_history) > 0:
-                tau1_history_array = np.stack([np.asarray(p[0], dtype=float).ravel() for p in valid_tau_history])
-                tau2_history_array = np.stack([np.asarray(p[1], dtype=float).ravel() for p in valid_tau_history])
-                n_tau1 = tau1_history_array.shape[1]
-                n_tau2 = tau2_history_array.shape[1]
+        valid_tau_history = [tau for tau in tau_history if tau[0] is not None and tau[1] is not None]
+        if len(valid_tau_history) > 0:
+            tau1_history_array = np.stack([np.asarray(p[0], dtype=float).ravel() for p in valid_tau_history])
+            tau2_history_array = np.stack([np.asarray(p[1], dtype=float).ravel() for p in valid_tau_history])
+            n_tau1 = tau1_history_array.shape[1]
+            n_tau2 = tau2_history_array.shape[1]
 
-                if n_tau1 == len(annotations) and n_tau2 == len(annotations):
-                    tau1_labels = annotations
-                elif n_tau1 == len(annotations) + 1 and n_tau2 == len(annotations):
-                    tau1_labels = ["intercept"] + annotations
-                else:
-                    raise ValueError(
-                        f"Unexpected tau history dimensions: tau1={n_tau1}, tau2={n_tau2}, annotations={len(annotations)}"
-                    )
-
-                cols1 = [f"Tau1_{a}" for a in tau1_labels]
-                cols2 = [f"Tau2_{a}" for a in annotations]
-                tau_history_df = pd.concat(
-                    [
-                        pd.DataFrame(tau1_history_array, columns=cols1),
-                        pd.DataFrame(tau2_history_array, columns=cols2),
-                    ],
-                    axis=1,
+            if n_tau1 == len(annotations) and n_tau2 == len(annotations):
+                tau1_labels = annotations
+            elif n_tau1 == len(annotations) + 1 and n_tau2 == len(annotations):
+                tau1_labels = ["intercept"] + annotations
+            else:
+                raise ValueError(
+                    f"Unexpected tau history dimensions: tau1={n_tau1}, tau2={n_tau2}, annotations={len(annotations)}"
                 )
-                tau_history_df.insert(0, "epoch", np.arange(len(valid_tau_history), dtype=int))
-                tau_history_df.to_csv(os.path.join(config['output_dir'], 'tau_history.csv'), index=False)
-                
-        else: # have one tau
-            valid_tau_history = [tau for tau in tau_history if tau is not None]
-            if len(valid_tau_history) > 0:
-                tau_history_array = np.array(valid_tau_history)
-                tau_history_df = pd.DataFrame(tau_history_array, columns=annotations)
-                tau_history_df.insert(0, 'epoch', range(len(valid_tau_history)))
-                tau_history_df.to_csv(os.path.join(config['output_dir'], 'tau_history.csv'), index=False)
- 
 
-    # --- Simulated parameters ---
-    beta_samples_sim, mu_samples_sim = {}, {}
-    if simulations is not None:
-        beta_samples_sim, mu_samples_sim = simulations_to_samples(simulations, data.gene_names)
-        torch.save(simulations, os.path.join(config['output_dir'], 'simulations.pt'))
-        
+            cols1 = [f"Tau1_{a}" for a in tau1_labels]
+            cols2 = [f"Tau2_{a}" for a in annotations]
+            tau_history_df = pd.concat(
+                [
+                    pd.DataFrame(tau1_history_array, columns=cols1),
+                    pd.DataFrame(tau2_history_array, columns=cols2),
+                ],
+                axis=1,
+            )
+            tau_history_df.insert(0, "epoch", np.arange(len(valid_tau_history), dtype=int))
+            tau_history_df.to_csv(os.path.join(output_dir, 'tau_history.csv'), index=False)
+      
+  
     # --- Beta samples: CSV per gene with variant IDs (saved in output_dir directly) ---
     if beta_samples is not None:
-        os.makedirs(os.path.join(config['output_dir'], 'beta_samples'), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'beta_samples'), exist_ok=True)
         for gene_name, beta_gene in beta_samples.items():
             beta_mean = np.atleast_1d(beta_gene.mean(axis=0))
             beta_std  = np.atleast_1d(beta_gene.std(axis=0))
@@ -182,20 +144,17 @@ def save_results(losses, times, posterior_stats, config, annotations,
                 })
             else:
                 beta_df = pd.DataFrame({'beta_mean': beta_mean, 'beta_std': beta_std})
-            if gene_name in beta_samples_sim:
-                beta_sim = np.atleast_1d(beta_samples_sim[gene_name].flatten())
-                beta_df['beta_simulated'] = beta_sim
 
             safe_gene_name = gene_name.replace('/', '_')
-            beta_df.to_csv(os.path.join(config['output_dir'], 'beta_samples', f'{safe_gene_name}_beta.csv.gz'),
+            beta_df.to_csv(os.path.join(output_dir, 'beta_samples', f'{safe_gene_name}_beta.csv.gz'),
                            index=False, compression="gzip")
 
         if save_full_samples:
-            np.savez_compressed(os.path.join(config['output_dir'], 'beta_samples', 'all_beta_samples.npz'), **beta_samples)
+            np.savez_compressed(os.path.join(output_dir, 'beta_samples', 'all_beta_samples.npz'), **beta_samples)
 
     # --- Mu samples: CSV per gene with variant IDs (saved in output_dir directly) ---
     if mu_samples is not None:
-        os.makedirs(os.path.join(config['output_dir'], 'mu_samples'), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'mu_samples'), exist_ok=True)
         for gene_name, mu_gene in mu_samples.items():
             mu_mean = np.atleast_1d(mu_gene.mean(axis=0))
             mu_std  = np.atleast_1d(mu_gene.std(axis=0))
@@ -213,26 +172,51 @@ def save_results(losses, times, posterior_stats, config, annotations,
                 })
             else:
                 mu_df = pd.DataFrame({'mu_mean': mu_mean, 'mu_std': mu_std})
-            if gene_name in mu_samples_sim:
-                mu_sim = np.atleast_1d(mu_samples_sim[gene_name].flatten())
-                mu_df['mu_simulated'] = mu_sim
 
             safe_gene_name = gene_name.replace('/', '_')
-            mu_df.to_csv(os.path.join(config['output_dir'], 'mu_samples', f'{safe_gene_name}_mu.csv.gz'),
+            mu_df.to_csv(os.path.join(output_dir, 'mu_samples', f'{safe_gene_name}_mu.csv.gz'),
                          index=False, compression="gzip")
 
         if save_full_samples:
-            np.savez_compressed(os.path.join(config['output_dir'], 'mu_samples', 'all_mu_samples.npz'), **mu_samples)
+            np.savez_compressed(os.path.join(output_dir, 'mu_samples', 'all_mu_samples.npz'), **mu_samples)
+
+    # --- Mean samples ---
+    if mean_samples is not None:
+        os.makedirs(os.path.join(output_dir, 'mean_samples'), exist_ok=True)
+        for gene_name, mean_gene in mean_samples.items():
+            mean_mean = np.atleast_1d(mean_gene.mean(axis=0))
+            mean_std  = np.atleast_1d(mean_gene.std(axis=0))
+
+            variant_ids_gene_G, variant_ids_gene_Z = _get_variant_ids_for_gene(
+                gene_name, gene_indices, variant_ids_G, variant_ids_Z
+            )
+
+            if variant_ids_gene_G is not None and variant_ids_gene_Z is not None:
+                mean_df = pd.DataFrame({
+                    'variant_id_G': variant_ids_gene_G,
+                    'variant_id_Z': variant_ids_gene_Z,
+                    'mean_mean': mean_mean,
+                    'mean_std': mean_std
+                })
+            else:
+                mean_df = pd.DataFrame({'mean_mean': mean_mean, 'mean_std': mean_std})
+
+            safe_gene_name = gene_name.replace('/', '_')
+            mean_df.to_csv(os.path.join(output_dir, 'mean_samples', f'{safe_gene_name}_mean.csv.gz'),
+                           index=False, compression="gzip")
+
+        if save_full_samples:
+            np.savez_compressed(os.path.join(output_dir, 'mean_samples', 'all_mean_samples.npz'), **mean_samples)
 
     # --- R2 scores ---
     if train_r2 is not None:
         r2_df = pd.DataFrame({'gene': list(train_r2.keys()), 'r2': list(train_r2.values())})
-        r2_df.to_csv(os.path.join(config['output_dir'], 'train_r2_scores.csv'), index=False)
+        r2_df.to_csv(os.path.join(output_dir, 'train_r2_scores.csv'), index=False)
 
     if test_r2 is not None:
         r2_df = pd.DataFrame({'gene': list(test_r2.keys()), 'r2': list(test_r2.values())})
-        r2_df.to_csv(os.path.join(config['output_dir'], 'test_r2_scores.csv'), index=False)
-    np.savez(os.path.join(config['output_dir'], 'posterior_stats.npz'), **posterior_stats)
+        r2_df.to_csv(os.path.join(output_dir, 'test_r2_scores.csv'), index=False)
+    np.savez(os.path.join(output_dir, 'posterior_stats.npz'), **posterior_stats)
     return
 
 

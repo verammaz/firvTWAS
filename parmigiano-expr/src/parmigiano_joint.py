@@ -21,8 +21,6 @@ import load_data
 from save_outputs import save_results
 from models import (
     ParmigianoExpJoint,
-    ParmigianoExpJointNonlinear,
-    simulate_expression,
     annotation_lambda,
 )
 
@@ -101,6 +99,44 @@ def calculate_r2(data, beta_samples, gene_names):
         r2_scores[gene_name] = r2_score(Y_gene.cpu().numpy(), predictions.cpu().numpy())
     return r2_scores
 
+def summarize_refit_diagnostics(data_train, posterior_stats, losses, train_r2, test_r2=None):
+    """Compute compact diagnostics for one refit."""
+    tau2_stats = posterior_stats.get("tau2")
+    tau2_mean = None if tau2_stats is None else tau2_stats.get("mean")
+
+    if tau2_mean is not None:
+        tau2 = torch.as_tensor(tau2_mean, dtype=torch.float32, device=data_train.device)
+        if tau2.ndim > 1:
+            tau2 = tau2.squeeze()
+        lin2 = data_train.Z.matmul(tau2)
+        mod = torch.exp(lin2)
+        lin2_max = float(torch.max(torch.abs(lin2)).item())
+        mod_median = float(torch.median(mod).item())
+        mod_p99 = float(torch.quantile(mod, 0.99).item())
+        mod_max = float(torch.max(mod).item())
+    else:
+        lin2_max = np.nan
+        mod_median = np.nan
+        mod_p99 = np.nan
+        mod_max = np.nan
+
+    train_vals = np.array(list(train_r2.values()), dtype=float) if train_r2 else np.array([])
+    test_vals = np.array(list(test_r2.values()), dtype=float) if test_r2 else np.array([])
+
+    return {
+        "final_loss": float(losses[-1]) if losses else np.nan,
+        "lin2_abs_max": lin2_max,
+        "mod_median": mod_median,
+        "mod_p99": mod_p99,
+        "mod_max": mod_max,
+        "train_avg_r2": float(np.mean(train_vals)) if train_vals.size else np.nan,
+        "train_prop_r2_gt_001": float(np.mean(train_vals > 0.01)) if train_vals.size else np.nan,
+        "train_prop_r2_gt_01": float(np.mean(train_vals > 0.1)) if train_vals.size else np.nan,
+        "test_avg_r2": float(np.mean(test_vals)) if test_vals.size else np.nan,
+        "test_prop_r2_gt_001": float(np.mean(test_vals > 0.01)) if test_vals.size else np.nan,
+        "test_prop_r2_gt_01": float(np.mean(test_vals > 0.1)) if test_vals.size else np.nan,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Main fit function
@@ -117,28 +153,53 @@ def make_init_loc_fn(data, config, eps=1e-3):
     """
     device = data.device
 
-    # Prior means for tau ~ Dirichlet(1) and threshold ~ Beta(2,20)
+    # tau1 and tau2 initialized to mean of priors
     num_anno = data.num_anno
-    tau_init = torch.ones(num_anno, device=device) / num_anno
-    if config.get("tau1_intercept", False):
-        tau1_init = torch.ones(num_anno + 1, device=device) / (num_anno + 1)
+    tau2_init = torch.zeros(num_anno, device=device) # normal(0, 1) prior
+    if config.get('tau1_normal_prior', False):
+        tau1_init = torch.zeros(num_anno + 1, device=device) # normal(0, 1) prior
     else:
-        tau1_init = tau_init
-    threshold_init = torch.tensor(2.0 / (2.0 + 20.0), device=device)
+        tau1_init = torch.ones(num_anno + 1, device=device) / (num_anno + 1) # uniform over annotations
+    
+    # threshold initialized to mean of Beta(2,20) prior
+    threshold_alpha = config.get("threshold_prior_alpha", 2.0)
+    threshold_beta = config.get("threshold_prior_beta", 20.0)
+    threshold_init = torch.tensor(threshold_alpha / (threshold_alpha + threshold_beta), device=device)
 
     def _get_brr_beta_vector(gene_name):
         """
-        Extract BRR beta vector for this gene as a 1D torch tensor on the right device.
-        Assumes data.brr_betas[gene_name] is a pandas DataFrame.
+        Build BRR beta warm-start vector aligned to current model variant order.
+        Missing BRR variants are initialized to 0.
         """
+        start_idx, end_idx = data.gene_indices[gene_name]
+        gene_variant_ids = data.variant_column_names[start_idx:end_idx]
+        n_gene_variants = len(gene_variant_ids)
+
         if data.brr_betas is None or gene_name not in data.brr_betas:
-            return None
+            return torch.zeros(n_gene_variants, dtype=torch.float32, device=device)
 
         df = data.brr_betas[gene_name]
+        if "beta" not in df.columns:
+            return torch.zeros(n_gene_variants, dtype=torch.float32, device=device)
 
-        beta_np = df["beta"].to_numpy()
+        # BRR index format: chr:pos_a1_a2 -> key on chr:pos
+        brr_beta_by_chr_pos = {}
+        for idx, row in df.iterrows():
+            chr_pos = str(idx).split("_")[0]
+            if chr_pos not in brr_beta_by_chr_pos:
+                brr_beta_by_chr_pos[chr_pos] = float(row["beta"])
 
-        beta = torch.as_tensor(beta_np, dtype=torch.float32, device=device)
+        beta_init = np.zeros(n_gene_variants, dtype=np.float32)
+        for i, variant_id in enumerate(gene_variant_ids):
+            # Model variant format: GENE_chr:pos
+            parts = variant_id.split("_", 1)
+            if len(parts) != 2:
+                continue
+            chr_pos = parts[1]
+            if chr_pos in brr_beta_by_chr_pos:
+                beta_init[i] = brr_beta_by_chr_pos[chr_pos]
+
+        beta = torch.as_tensor(beta_init, dtype=torch.float32, device=device)
         return beta
 
     def init_loc_fn(site):
@@ -147,7 +208,7 @@ def make_init_loc_fn(data, config, eps=1e-3):
 
         # Only care about unobserved sample sites
         if site["type"] != "sample" or site.get("is_observed", False):
-            return None  # let Pyro handle others
+            return None
 
         # Global gene weights
         if name == "w_g":
@@ -161,34 +222,20 @@ def make_init_loc_fn(data, config, eps=1e-3):
         if name.startswith("Z_"):
             gene_name = name[2:]  # strip "Z_"
 
-            # If no BRR betas, fall back to prior mean 0
             beta_brr = _get_brr_beta_vector(gene_name)
-            if beta_brr is None:
-                return torch.zeros(fn.event_shape, device=device)
 
             # Get per-gene annotations and weights
             G_gene, Z_gene, maf_weights_gene = data.get_gene_data(gene_name)
 
-            # Match generative λ (nonlinear + chrombpnet_dist_only vs default); τ₁,τ₂ both ~ uniform for init
-            if config.get("tau12", False):
-                lambda_approx = annotation_lambda(
-                    Z_gene,
-                    maf_weights_gene,
-                    config,
-                    "nonlinear",
-                    threshold_init,
-                    tau1=tau1_init,
-                    tau2=tau_init,
-                )
-            else:
-                lambda_approx = annotation_lambda(
-                    Z_gene,
-                    maf_weights_gene,
-                    config,
-                    "linear",
-                    threshold_init,
-                    tau=tau_init,
-                )
+            # Match generative λ 
+            lambda_approx = annotation_lambda(
+                Z_gene,
+                maf_weights_gene,
+                threshold_init,
+                tau1=tau1_init,
+                tau2=tau2_init,
+                lin2_clip=config.get("lin2_clip", None),
+            )
 
             # Make sure shapes match; if not, just fall back
             if beta_brr.shape[0] != lambda_approx.shape[0]:
@@ -210,37 +257,19 @@ def make_init_loc_fn(data, config, eps=1e-3):
 
     return init_loc_fn
 
-def setup_model(data_train, config, mode="linear", simulated_parameters=None):
+def setup_model(data_train, config):
     logger = utils.get_logger()
     to_optimize = []
-    if mode == "nonlinear":
-        model = ParmigianoExpJointNonlinear(simulated_parameters=simulated_parameters)
-        to_optimize.append('tau1')
-        to_optimize.append('tau2')    
-        logger.info("Using nonlinear model")
-    else: # linear
-        model = ParmigianoExpJoint(simulated_parameters=simulated_parameters)
-        to_optimize = ['tau']
-        logger.info("Using linear model")
-    
-    learn_threshold = (not config.get("no_filter", False)) and (
-        not config.get("chrombpnet_dist_only", False)
-    )
-    if learn_threshold:
-        to_optimize.append("threshold")
-        logger.info("Optimizing threshold")
-    elif config.get("chrombpnet_dist_only", False) and not config.get("no_filter", False):
-        logger.info(
-            "chrombpnet_dist_only: threshold not in λ; fixed at 0 (not optimized)"
-        )
+    model = ParmigianoExpJoint()
+    to_optimize.append('tau1')
+    to_optimize.append('tau2')    
+    to_optimize.append("threshold")
 
     guide = AutoGuideList(model)
 
     # ------------------------------------------------------------------
     # Decide whether there are any non-(tau/threshold) latents to put
-    # under AutoDiagonalNormal. In some modes (e.g. burden + no_wg +
-    # no_filter) there may be none, which would cause
-    # AutoDiagonalNormal to error. We detect that and skip it.
+    # under AutoDiagonalNormal. 
     # ------------------------------------------------------------------
     blocked_model = poutine.block(model, hide=to_optimize)
     trace = poutine.trace(blocked_model).get_trace(data_train, config)
@@ -250,7 +279,7 @@ def setup_model(data_train, config, mode="linear", simulated_parameters=None):
     )
 
     # Decide whether to use BRR-based warm start (requires BRR betas)
-    use_brr_init = config.get('use_brr', True) and (data_train.brr_betas is not None)
+    use_brr_init = (data_train.brr_betas is not None)
 
     if has_latents:
         if use_brr_init:
@@ -268,7 +297,7 @@ def setup_model(data_train, config, mode="linear", simulated_parameters=None):
     guide.add(AutoDelta(poutine.block(model, expose=to_optimize)))
 
     clip_norm = config.get('clip_norm', 10.0)
-    if HAS_CLIPPED_ADAM and config.get('use_clip_norm', True): # defualt to using clip_norm unless specified not to 
+    if HAS_CLIPPED_ADAM:
         adam = ClippedAdam({"lr": config['lr'], "clip_norm": clip_norm})
         logger.info(f"Using ClippedAdam with clip_norm={clip_norm}")
     else:
@@ -279,26 +308,18 @@ def setup_model(data_train, config, mode="linear", simulated_parameters=None):
 
     return model, guide,svi
 
-def fit_parmigiano(data_train, config, simulated_parameters=None):
+def fit_parmigiano(data_train, config):
     """
     Fit parmigiano_expression (joint) model using SVI.
 
     INPUT:
         - data_train: DataTensors for training
         - config: configuration dictionary
-        - simulated_parameters: pre-computed from simulate_expression (optional)
     OUTPUT:
-        - losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulated_parameters
+        - losses, times, posterior_stats, beta_samples, mu_samples, tau_history
     """
     logger = utils.get_logger()
-    pyro.clear_param_store()
-
-    if config.get('simulate', False) and simulated_parameters is None:
-        simulated_parameters = simulate_expression(data_train, config)
-        logger.info("Finished simulating data")
-
-    mode = "linear" if not config.get('tau12', False) else "nonlinear"
-    model, guide, svi = setup_model(data_train, config, mode=mode, simulated_parameters=simulated_parameters)
+    model, guide, svi = setup_model(data_train, config)
     
     pyro.clear_param_store()
 
@@ -322,10 +343,7 @@ def fit_parmigiano(data_train, config, simulated_parameters=None):
             break
         times.append(time.time() - start)
         losses.append(float(loss))
-        if mode == "nonlinear":
-            tau_history.append((_extract_tau_history_step(epoch, 'tau1'), _extract_tau_history_step(epoch, 'tau2')))
-        else:
-            tau_history.append(_extract_tau_history_step(epoch, 'tau'))
+        tau_history.append((_extract_tau_history_step(epoch, 'tau1'), _extract_tau_history_step(epoch, 'tau2')))
         if epoch % 10 == 0:
             logger.info(f"  Epoch {epoch}: Loss = {loss:.4f}")
 
@@ -342,11 +360,10 @@ def fit_parmigiano(data_train, config, simulated_parameters=None):
     }
     beta_samples = _extract_samples(samples, data_train, "beta")
     mu_samples = _extract_samples(samples, data_train, "mu")
+    sigma_samples = _extract_samples(samples, data_train, "sigma")
 
     logger.info("Training complete!")
-    return losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulated_parameters
-
-
+    return losses, times, posterior_stats, beta_samples, mu_samples, sigma_samples, tau_history
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +378,7 @@ def main():
     config = utils.fill_defaults(args, yaml_config)
 
     config.pop('chromosome', None)
+    config.pop('pergene_output_dir', None)
 
     log_level = config.get('log_level', 'INFO')
     log_file = config.get('log_file', None)
@@ -374,16 +392,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    OUTPUT_DIR = config.get('output_dir')
     
-    # Check if all refits already completed
-    if OUTPUT_DIR and os.path.isdir(OUTPUT_DIR):
-        existing_runs = [int(f.split('_')[1]) for f in os.listdir(OUTPUT_DIR)
-                         if f.startswith('run_') and f.split('_')[1].isdigit()]
-        if len(existing_runs) >= 100:
-            logger.info(f"All {config['refits']} refits already exist in {OUTPUT_DIR}. Exiting.")
-            return
-
+    OUTPUT_DIR = config.get('joint_output_dir', None)
+    if not OUTPUT_DIR:
+        raise ValueError("'joint_output_dir' must be set in config.")
+    
     # Parse gene list
     if isinstance(config.get('gene_list'), str):
         if os.path.exists(config['gene_list']):
@@ -402,9 +415,6 @@ def main():
     G, Z, variant_ids_G, variant_ids_Z = load_data.load_genes(config)
 
     # Load Bayesian Ridge Regression results
-    if not config.get('use_brr', True):
-        config['brr_results_dir'] = None
-
     if config.get('brr_results_dir', None) is not None:
         logger.info("Loading Bayesian Ridge Regression results...")
         brr_results = load_data.load_brr_results(config)
@@ -433,14 +443,48 @@ def main():
         G_train = G.loc[train_sample_ids]
         G_test = G.loc[test_sample_ids]
 
+        # Train tensors first so MAF-based common-variant filtering (if enabled) defines
+        # variant_column_names; test must reuse the same columns.
+        logger.info("Creating train data tensors...")
+        data_train = load_data.DataTensors.from_pandas(
+            G_train,
+            Z,
+            X_train,
+            Y_train,
+            brr_betas,
+            brr_alphas,
+            device,
+            config,
+            train_G_for_maf_filter=G_train,
+        )
         logger.info("Creating test data tensors...")
-        data_test = load_data.DataTensors.from_pandas(G_test, Z, X_test, Y_test, brr_betas, brr_alphas, device, config)
+        data_test = load_data.DataTensors.from_pandas(
+            G_test,
+            Z,
+            X_test,
+            Y_test,
+            brr_betas,
+            brr_alphas,
+            device,
+            config,
+            train_G_for_maf_filter=G_train,
+            forced_variant_columns=data_train.variant_column_names,
+        )
     else:
         data_test = None
         X_train, Y_train, G_train = X, Y, G
-
-    logger.info("Creating train data tensors...")
-    data_train = load_data.DataTensors.from_pandas(G_train, Z, X_train, Y_train, brr_betas, brr_alphas, device, config)
+        logger.info("Creating train data tensors...")
+        data_train = load_data.DataTensors.from_pandas(
+            G_train,
+            Z,
+            X_train,
+            Y_train,
+            brr_betas,
+            brr_alphas,
+            device,
+            config,
+            train_G_for_maf_filter=G_train,
+        )
 
     logger.info(f"\nData summary:")
     logger.info(f"  Train samples: {data_train.G.shape[0]}" +
@@ -465,11 +509,14 @@ def main():
         'covariates': data_train.num_cov,
     }
     
-    
-    for run in range(config['refits']):
+    # all runs share config, save config to joint_output_dir
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    runs = []
+    refit_summaries = []
+    for run in range(config['refits']): # each run in child folder
         print("\nREFIT #",run+1)
         # Fit
-        losses, times, posterior_stats, beta_samples, mu_samples, tau_history, simulations = fit_parmigiano(data_train, config)
+        losses, times, posterior_stats, beta_samples, mu_samples, sigma_samples, tau_history = fit_parmigiano(data_train, config)
     
         logger.info(f"\nFinal loss: {losses[-1]:.4f}")
         logger.info(f"Avg time/epoch: {np.mean(times):.2f}s  |  Total: {np.sum(times):.2f}s")
@@ -484,32 +531,31 @@ def main():
             logger.info("Calculating R2 on test set...")
             test_r2 = calculate_r2(data_test, beta_samples, data_train.gene_names)
             logger.info(f"  Avg Test R2: {np.mean(list(test_r2.values())):.4f}")
+
+        summary = summarize_refit_diagnostics(
+            data_train=data_train,
+            posterior_stats=posterior_stats,
+            losses=losses,
+            train_r2=train_r2,
+            test_r2=test_r2,
+        )
+        summary["refit"] = run + 1
+        refit_summaries.append(summary)
     
         # Output directory (auto-increment run_N)
-        base_output_dir = OUTPUT_DIR
-        if base_output_dir:
-            os.makedirs(base_output_dir, exist_ok=True)
-            run_ids = [int(f.split('_')[1]) for f in os.listdir(base_output_dir)
-                       if f.startswith('run_') and f.split('_')[1].isdigit()]
-            run_id = max(run_ids) + 1 if run_ids else 1
-            output_dir = os.path.join(base_output_dir, f'run_{run_id}')
-        else:
-            output_dir = None
-    
-        config['output_dir'] = output_dir
-    
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            with open(os.path.join(output_dir, 'config.yaml'), 'w') as f:
-                yaml.dump(config, f)
-            save_results(
+        run_ids = [int(f.split('_')[1]) for f in os.listdir(OUTPUT_DIR)
+                    if f.startswith('run_') and f.split('_')[1].isdigit()]
+        run_id = max(run_ids) + 1 if run_ids else 1
+        runs.append(run_id)
+        output_dir = os.path.join(OUTPUT_DIR, f'run_{run_id}')
+       
+        save_results(
+                output_dir=output_dir,
                 losses=losses,
                 times=times,
                 posterior_stats=posterior_stats,
-                config=config,
                 annotations=list(Z.columns),
                 data = data_train,
-                simulations=simulations,
                 beta_samples=beta_samples,
                 mu_samples=mu_samples,
                 train_r2=train_r2,
@@ -518,12 +564,34 @@ def main():
                 variant_ids_G=variant_ids_G,
                 variant_ids_Z=variant_ids_Z,
                 gene_indices=data_train.gene_indices,
+        )
+        logger.info(f"Results saved to {output_dir}")
+
+    if refit_summaries:
+        logger.info("\nRefit summary diagnostics:")
+        header = (
+            "refit | final_loss | lin2_abs_max | mod_median | mod_p99 | mod_max | "
+            "train_avg_r2 | train_prop>0.01 | train_prop>0.1 | "
+            "test_avg_r2 | test_prop>0.01 | test_prop>0.1"
+        )
+        logger.info(header)
+        for s in refit_summaries:
+            logger.info(
+                f"{s['refit']:>5d} | "
+                f"{s['final_loss']:.4f} | {s['lin2_abs_max']:.4f} | "
+                f"{s['mod_median']:.4f} | {s['mod_p99']:.4f} | {s['mod_max']:.4f} | "
+                f"{s['train_avg_r2']:.4f} | {s['train_prop_r2_gt_001']:.4f} | {s['train_prop_r2_gt_01']:.4f} | "
+                f"{s['test_avg_r2']:.4f} | {s['test_prop_r2_gt_001']:.4f} | {s['test_prop_r2_gt_01']:.4f}"
             )
-            logger.info(f"Results saved to {output_dir}")
-    
+
     logger.info("\nDone with all refits!")
 
-    
+    # save config to output_dir
+    config['refits'] = runs
+    with open(os.path.join(OUTPUT_DIR, 'config.yaml'), 'w') as f:
+        yaml.dump(config, f)
+    logger.info(f"Config saved to {os.path.join(OUTPUT_DIR, 'config.yaml')}")
 
+    
 if __name__ == '__main__':
     main()

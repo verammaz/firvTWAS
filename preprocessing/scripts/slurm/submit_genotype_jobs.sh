@@ -18,7 +18,7 @@ JOB_ID=$(sbatch --job-name="genotype" \
     --output="logs/genotype/genotype_chr%a.out" \
     --error="logs/genotype/genotype_chr%a.err" \
     --array=1-22\
-    --time=20:00:00 \
+    --time=30:00:00 \
     --mem=100G \
     --cpus-per-task=8 \
     "${GENOTYPE_SCRIPT}" | grep -oP '\d+')

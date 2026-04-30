@@ -3,13 +3,11 @@
 # Phenotype data
 expression_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv'
 covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/covariates.tsv'
-diagnosis_col: Diagnosis
-sample_col: SampleID
 
 # Genotype and annotation data (Option 2: Individual gene files)
 genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
-annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations/'
-gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src/gene_list_3.txt'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/'
+gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src/200genes_list_seed_random_full.txt'
 
 # Bayesian Ridge Regression results
 brr_results_dir: "/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge"
@@ -22,10 +20,15 @@ maf_beta: 1  # Beta parameter for MAF weights
 lr: 0.01   # Learning rate
 epochs: 500  # Number of training epochs
 n_posterior: 50  # Number of posterior samples
-refits: 100
-tau1_intercept: True
-common_variants_only: True
-maf_threshold: 0.05
+refits: 1
+lin2_clip: null  # Optional clamp for lin2 before exp (e.g. 8.0 or 10.0 to stabilize)
+maf_threshold: null
+annotations: ['chrombpnet', 'dist_to_TSS', 'ABC', 'CADD_raw', 'Eigen-raw', 'enformer', 'lof', 'missense', 'splice', 'MAP20', 'alphamissense', 'gnomAD_genomes_POPMAX_AF']
 
 # Output
-output_dir: seed_genes_minmax
+joint_output_dir: 'output/joint'
+# per-chromosome subdirectory created automatically in pergene output directory
+pergene_output_dir: 'output/pergene'
+
+# Per-gene 
+chromosome: 21

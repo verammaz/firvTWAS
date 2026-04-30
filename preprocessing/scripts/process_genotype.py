@@ -15,6 +15,19 @@ CHR = sys.argv[1]
 RAW_DIR = sys.argv[2]
 OUTPUT_DIR = sys.argv[3]
 
+# -- LOG FILE ---
+LOG_FILE = f"/gpfs/commons/home/vmazeeva/firvTWAS/preprocessing/scripts/slurm/logs/genotype/genotype_chr{CHR}.out"
+completed_genes = set()
+if os.path.exists(LOG_FILE):
+    with open(LOG_FILE) as f:
+        for line in f:
+            m = re.search(r'Completed (ENSG\d+)', line)
+            if m:
+                completed_genes.add(m.group(1))
+
+print(f"\nCompleted genes: {completed_genes}", flush=True)
+print(f"LOG_FILE: {LOG_FILE}", flush=True)
+
 # Number of threads for parallel processing (default: 4, can be overridden with NUM_THREADS env var)
 NUM_THREADS = int(os.environ.get("NUM_THREADS", "4"))
 
@@ -34,6 +47,9 @@ def process_gene(gene, file, samples, gene_variant_counts, variant_gene_counts):
     Returns: (gene, success, n_variants, variant_ids) or (gene, False, 0, [])
     """
     try:
+        if gene in completed_genes:
+            return (gene, True, 0, [])
+        
         print(f"Processing {gene} ...", flush=True)
 
         # --- Check if genotype file exists (ie gene passed plink extraction/recode) ---
@@ -238,7 +254,8 @@ def main():
         if not file.endswith("_annotations.tsv.gz"):
             continue
         gene = re.sub(r"_annotations\.tsv\.gz$", "", file)
-        gene_files.append((gene, file))
+        if gene not in completed_genes:
+            gene_files.append((gene, file))
     
     print(f"Found {len(gene_files)} genes to process", flush=True)
 

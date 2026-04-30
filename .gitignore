@@ -14,3 +14,7 @@ parmigiano-expr/src/scaling/experiments/
 parmigiano-expr/src/random.ipynb
 parmigiano-expr/src/topgenes*
 parmigiano-expr/src/diagnostics*/
+parmigiano-expr/src/*genes_list*
+parmigiano-expr/src/plotting/
+parmigiano-expr/src/output
+parmigiano-expr/src/scaling
