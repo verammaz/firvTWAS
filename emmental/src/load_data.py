@@ -387,7 +387,7 @@ def load_brr_results(config):
 @dataclass
 class DataTensors:
     """
-    Container for all input data tensors required by Parmigiano model.
+    Container for all input data tensors required by Emmental model.
     Works for both joint (tau/threshold inferred) and per-gene (tau/threshold pre-loaded) modes.
     """
     G: torch.Tensor            # Genotype matrix (N x P)

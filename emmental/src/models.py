@@ -58,7 +58,7 @@ def annotation_lambda(
     return gate * lin1 * mod * maf_weights_gene
         
 
-class ParmigianoExpJoint(PyroModule):
+class EmmentalJoint(PyroModule):
     """
     Joint model across genes - used by run_joint.py.
     tau1 and tau2 for nonlinear annotation interaction
@@ -137,7 +137,7 @@ class ParmigianoExpJoint(PyroModule):
         return data
 
 
-class ParmigianoExpPerGene(PyroModule):
+class EmmentalPerGene(PyroModule):
     """
     Per-gene model - used by run_pergene.py.
     tau and threshold are pre-loaded into data tensors (not inferred here).
@@ -226,7 +226,7 @@ class ParmigianoExpPerGene(PyroModule):
 
 def simulate_expression(data, config, mode="linear"):
     """
-    Simulate expression from prior. Mirrors parmigiano_expression.forward exactly.
+    Simulate expression from prior. Mirrors emmental.forward exactly.
     """
     simulated_parameters = {}
     w_g = pyro.sample('w_g', dist.Normal(0, 1).expand([data.num_genes]).to_event(1)).to(data.device)

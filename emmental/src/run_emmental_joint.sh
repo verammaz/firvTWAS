@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=parmigiano
+#SBATCH --job-name=emmental-joint
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.err
 #SBATCH --time=10:00:00
@@ -19,7 +19,7 @@ set --
 source /gpfs/commons/groups/knowles_lab/software/anaconda3/bin/activate
 set -- "${SCRIPT_ARGS[@]}"
 
-cd /gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src
+cd /gpfs/commons/home/vmazeeva/firvTWAS/emmental/src
 
 # Default values
 joint_output_dir=output/joint
@@ -197,7 +197,7 @@ if [ -n "$lin2_clip" ] && [ "$lin2_clip" != "None" ] && [ "$lin2_clip" != "null"
 fi
 
 
-python -u parmigiano_joint.py --config $config_file \
+python -u emmental_joint.py --config $config_file \
                          --gene_list $gene_list \
                          --expression_path $expression_path \
                          --annotation_dir $annotation_dir \

@@ -18,7 +18,7 @@ logger = None
 
 def setup_logging(level='INFO', log_file=None):
     """
-    Setup logging configuration for the parmigiano package.
+    Setup logging configuration for the emmental package.
     INPUT:
         - level: Logging level string ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
         - log_file: Optional path to log file. If None, logs only to console.
@@ -29,7 +29,7 @@ def setup_logging(level='INFO', log_file=None):
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {level}')
-    logger = logging.getLogger('parmigiano')
+    logger = logging.getLogger('emmental')
     logger.setLevel(numeric_level)
     logger.handlers = []
     formatter = logging.Formatter('%(message)s')
@@ -193,12 +193,12 @@ def fill_defaults(args, yaml_config=None):
     Supports both joint and per-gene modes.
     """
     defaults = {
-        'model': 'parmigiano',
+        'model': 'emmental',
         'epochs': 500,
         'n_posterior': 50,
         'lr': 0.01,
-        'joint_output_dir': 'parmigiano_outputs/joint',
-        'pergene_output_dir': 'parmigiano_outputs/pergene', # not used in joint mode
+        'joint_output_dir': 'emmental_outputs/joint',
+        'pergene_output_dir': 'emmental_outputs/pergene', # not used in joint mode
         'maf_beta': 1,
         'brr_results_dir': None,
         'chromosome': 'chr21', # not used in joint mode
@@ -237,7 +237,7 @@ def str_to_bool(v):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Configuration for Parmigiano Package")
+    parser = argparse.ArgumentParser(description="Configuration for Emmental Package")
     # Essential arguments
     parser.add_argument('--config', type=str, help="Path to the YAML configuration file")
     # General arguments

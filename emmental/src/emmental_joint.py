@@ -20,7 +20,7 @@ import utils
 import load_data
 from save_outputs import save_results
 from models import (
-    ParmigianoExpJoint,
+    EmmentalJoint,
     annotation_lambda,
 )
 
@@ -260,7 +260,7 @@ def make_init_loc_fn(data, config, eps=1e-3):
 def setup_model(data_train, config):
     logger = utils.get_logger()
     to_optimize = []
-    model = ParmigianoExpJoint()
+    model = EmmentalJoint()
     to_optimize.append('tau1')
     to_optimize.append('tau2')    
     to_optimize.append("threshold")
@@ -308,9 +308,9 @@ def setup_model(data_train, config):
 
     return model, guide,svi
 
-def fit_parmigiano(data_train, config):
+def fit_emmental(data_train, config):
     """
-    Fit parmigiano_expression (joint) model using SVI.
+    Fit emmental_expression (joint) model using SVI.
 
     INPUT:
         - data_train: DataTensors for training
@@ -385,7 +385,7 @@ def main():
     logger = utils.setup_logging(log_level, log_file)
 
     logger.info("=" * 50)
-    logger.info("PARMIGIANO - Joint Bayesian Gene Analysis")
+    logger.info("EMMENTAL - Joint Bayesian Gene Analysis")
     logger.info("=" * 50)
     for key, value in config.items():
         logger.info(f"  {key}: {value}")
@@ -516,7 +516,7 @@ def main():
     for run in range(config['refits']): # each run in child folder
         print("\nREFIT #",run+1)
         # Fit
-        losses, times, posterior_stats, beta_samples, mu_samples, sigma_samples, tau_history = fit_parmigiano(data_train, config)
+        losses, times, posterior_stats, beta_samples, mu_samples, sigma_samples, tau_history = fit_emmental(data_train, config)
     
         logger.info(f"\nFinal loss: {losses[-1]:.4f}")
         logger.info(f"Avg time/epoch: {np.mean(times):.2f}s  |  Total: {np.sum(times):.2f}s")

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=parmigiano
+#SBATCH --job-name=emmental-pergene
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j_%a.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j_%a.err
 #SBATCH --time=10:00:00
@@ -20,7 +20,7 @@ set --
 source /gpfs/commons/groups/knowles_lab/software/anaconda3/bin/activate
 set -- "${SCRIPT_ARGS[@]}"
 
-cd /gpfs/commons/home/vmazeeva/firvTWAS/parmigiano-expr/src
+cd /gpfs/commons/home/vmazeeva/firvTWAS/emmental/src
 
 
 # Default values
@@ -100,7 +100,7 @@ if [ ! -d "$joint_output_dir" ]; then
 fi
 
 
-python -u parmigiano_pergene.py --config $config_file \
+python -u emmental_pergene.py --config $config_file \
                          --pergene_output_dir $pergene_output_dir \
                          --joint_output_dir $joint_output_dir \
                          --chromosome $chromosome \

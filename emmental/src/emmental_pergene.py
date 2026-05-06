@@ -23,7 +23,7 @@ except (ImportError, AttributeError):
 
 import load_data
 import utils
-from models import ParmigianoExpPerGene, annotation_lambda, simulate_expression
+from models import EmmentalPerGene, annotation_lambda, simulate_expression
 from save_outputs import save_results
 
 
@@ -235,9 +235,9 @@ def make_init_loc_fn(data, eps=1e-3):
     return init_loc_fn
 
 
-def fit_parmigiano(data, config):
+def fit_emmental(data, config):
     """
-    Fit per-gene Parmigiano with fixed global τ and T from joint outputs.
+    Fit per-gene Emmental with fixed global τ and T from joint outputs.
 
     INPUT:
         - data: dict with 'Train' and 'Test' DataTensors (BRR alphas set on data for obs. noise)
@@ -248,7 +248,7 @@ def fit_parmigiano(data, config):
     logger = utils.get_logger()
     pyro.clear_param_store()
 
-    model = ParmigianoExpPerGene(config, data)
+    model = EmmentalPerGene(config, data)
     use_brr_init = data.brr_betas is not None
     if use_brr_init:
         guide = AutoDiagonalNormal(model, init_loc_fn=make_init_loc_fn(data))
@@ -320,7 +320,7 @@ def main():
             raise ValueError(f"Joint output directory {config['joint_output_dir']} does not exist.")
         merge_config_from_joint_dir(config, config["joint_output_dir"])
     else:
-        raise ValueError("Provide --joint_output_dir to the parmigiano_joint output root.")
+        raise ValueError("Provide --joint_output_dir to the emmental_joint output root.")
 
     if config.get("chromosome", None) is None:
         raise ValueError("Chromosome not specified in config")
@@ -346,7 +346,7 @@ def main():
 
     config.pop('gene_list', None)
     logger.info("=" * 50)
-    logger.info("PARMIGIANO - Per-Gene (fixed joint τ, T)")
+    logger.info("EMMENTAL - Per-Gene (fixed joint τ, T)")
     logger.info("=" * 50)
     for key, value in sorted(config.items()):
         logger.info(f"  {key}: {value}")
@@ -433,7 +433,7 @@ def main():
                     forced_variant_columns=None,
                 )
                 data[split_name] = group_data
-                # ParmigianoExpPerGene registers these as torch buffers.
+                # EmmentalPerGene registers these as torch buffers.
                 data[split_name].tau1 = torch.as_tensor(tau1, dtype=torch.float32, device=device)
                 data[split_name].tau2 = torch.as_tensor(tau2, dtype=torch.float32, device=device)
                 data[split_name].threshold = torch.as_tensor(th, dtype=torch.float32, device=device)
@@ -449,7 +449,7 @@ def main():
             else:
                 logger.info(f"  STD (1/sqrt(alpha)): {1.0 / np.sqrt(alpha_val):.4f}  |  Threshold T: {th:.4f}")
 
-            losses, times, posterior_stats, beta_samples, mean_samples = fit_parmigiano(data["Train"], config)
+            losses, times, posterior_stats, beta_samples, mean_samples = fit_emmental(data["Train"], config)
 
             logger.info(f"  Final loss: {losses[-1]:.4f}")
             logger.info(f"  Avg time/epoch: {np.mean(times):.3f}s")
