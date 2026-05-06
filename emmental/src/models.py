@@ -17,10 +17,7 @@ def annotation_lambda(
     threshold,
     tau1=None,
     tau2=None,
-    lin2_clip=None,
-    logger=None,
-    gate_mode="hard_abs",
-    gate_sharpness=20.0,
+    logger=None
 ):
     """
     Per-variant λ in the joint / per-gene / simulate paths.
@@ -32,29 +29,13 @@ def annotation_lambda(
     assert tau1 is not None and tau2 is not None
     # Ztau2
     lin2 = Z_gene.matmul(tau2)
-    if lin2_clip is not None:
-        clip = float(lin2_clip)
-        lin2 = torch.clamp(lin2, min=-clip, max=clip)
     mod = torch.exp(lin2)
     # add intercept to Z_gene
     Z_gene = torch.cat([torch.ones(Z_gene.shape[0], 1, dtype=torch.float32, device=Z_gene.device), Z_gene], dim=1)
     assert Z_gene.shape[1] == tau1.shape[0], "Z_gene and tau1 must have the same number of columns"
     # Ztau1
     lin1 = Z_gene.matmul(tau1)    
-    # if logger is not None:
-    #     logger.info(f"lin1: {lin1.shape}, mod: {mod.shape}, maf_weights_gene: {maf_weights_gene.shape}, threshold: {threshold}")
-    #     logger.info(f"lin1 min: {lin1.min()}, lin1 max: {lin1.max()}, lin1 mean: {lin1.mean()}, lin1 std: {lin1.std()}")
-    #     logger.info(f"mod min: {mod.min()}, mod max: {mod.max()}, mod mean: {mod.mean()}, mod std: {mod.std()}")
-    #     logger.info(f"maf_weights_gene min: {maf_weights_gene.min()}, maf_weights_gene max: {maf_weights_gene.max()}, maf_weights_gene mean: {maf_weights_gene.mean()}, maf_weights_gene std: {maf_weights_gene.std()}")
-    #     logger.info(f"threshold: {threshold.min()}, threshold max: {threshold.max()}, threshold mean: {threshold.mean()}, threshold std: {threshold.std()}")
-   
-    if gate_mode == "hard_abs":
-        gate = (torch.abs(lin1) >= threshold).to(lin1.dtype)
-    elif gate_mode == "smooth_abs":
-        sharp = float(gate_sharpness)
-        gate = torch.sigmoid(sharp * (torch.abs(lin1) - threshold))
-    else:
-        raise ValueError(f"Unsupported gate_mode: {gate_mode}")
+    gate = (torch.abs(lin1) >= threshold).to(lin1.dtype)
     return gate * lin1 * mod * maf_weights_gene
         
 

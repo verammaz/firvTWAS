@@ -210,10 +210,7 @@ def fill_defaults(args, yaml_config=None):
         'T_prior_alpha': 2.0,
         'T_prior_beta': 20.0,
         'annotations': [],
-        'maf_threshold': None,
-        'lin2_clip': None,
-        'gate_mode': 'hard_abs',
-        'gate_sharpness': 20.0,
+        'maf_threshold': None
     }
 
     if yaml_config:
@@ -262,7 +259,6 @@ def parse_args():
     parser.add_argument('--lr', type=float, help="Learning rate")
     parser.add_argument('--refits', type=int, help="Number of refits")
     parser.add_argument('--clip_norm', type=float, help="Clip norm of weights (default: 10.0)")
-    parser.add_argument('--lin2_clip', type=float, help="Clip lin2 before exp (default: None)")
     # Model parameters
     parser.add_argument('--maf_beta', type=int, help="Beta parameter for MAF weights")
     parser.add_argument('--tau1_normal_prior', type=str_to_bool, help="Use normal prior for tau1")
@@ -270,8 +266,6 @@ def parse_args():
     parser.add_argument('--threshold_prior_alpha', type=float, help="Alpha for threshold Beta prior")
     parser.add_argument('--threshold_prior_beta', type=float, help="Beta for threshold Beta prior")
     parser.add_argument('--maf_threshold', type=float, help="MAF threshold for common variants")
-    parser.add_argument('--gate_mode', type=str, choices=['hard_abs', 'smooth_abs'], help="Gate mode for |lin1| thresholding")
-    parser.add_argument('--gate_sharpness', type=float, help="Sharpness for smooth_abs gate (higher = harder)")
    
     # Per-gene specific flags
     parser.add_argument('--chromosome', type=str, help="Chromosome of focus (per-gene analysis only)")

@@ -24,7 +24,7 @@ cd /gpfs/commons/home/vmazeeva/firvTWAS/emmental/src
 # Default values
 joint_output_dir=output/joint
 config_file=config_base.yaml
-gene_list=200genes_list_seed_random_full.txt
+gene_list=genes/genes_list_seed.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
 annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled/
 brr_results_dir=/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge

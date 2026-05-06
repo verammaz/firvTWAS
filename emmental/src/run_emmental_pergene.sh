@@ -32,7 +32,12 @@ lr=0.01
 epochs=1000
 log_level=INFO
 
+# if not submitted as an array job, run for chromosome 21
+if [ -z "$SLURM_ARRAY_TASK_ID" ]; then
+chromosome=21
+else
 chromosome=$SLURM_ARRAY_TASK_ID
+fi
 
 # Parse command line arguments with long-form options
 while [[ $# -gt 0 ]]; do

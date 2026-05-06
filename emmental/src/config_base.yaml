@@ -7,7 +7,7 @@ covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/c
 # Genotype and annotation data (Option 2: Individual gene files)
 genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
 annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/'
-gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/genes/200genes_list_seed_random_full.txt'
+gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/genes/genes_list_seed.txt'
 
 # Bayesian Ridge Regression results
 brr_results_dir: "/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge"

@@ -233,8 +233,7 @@ def make_init_loc_fn(data, config, eps=1e-3):
                 maf_weights_gene,
                 threshold_init,
                 tau1=tau1_init,
-                tau2=tau2_init,
-                lin2_clip=config.get("lin2_clip", None),
+                tau2=tau2_init
             )
 
             # Make sure shapes match; if not, just fall back
