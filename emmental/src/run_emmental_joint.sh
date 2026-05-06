@@ -40,9 +40,6 @@ threshold_prior_alpha=2.0
 threshold_prior_beta=20.0
 maf_beta=1
 maf_threshold=""
-lin2_clip=""
-gate_mode="hard_abs"
-gate_sharpness="20.0"
 
 
 # Parse command line arguments with long-form options
@@ -86,18 +83,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --epochs|--epoch)
             epochs="$2"
-            shift 2
-            ;;
-        --lin2_clip|--lin2-clip)
-            lin2_clip="$2"
-            shift 2
-            ;;
-        --gate_mode|--gate-mode)
-            gate_mode="$2"
-            shift 2
-            ;;
-        --gate_sharpness|--gate-sharpness)
-            gate_sharpness="$2"
             shift 2
             ;;
         --log_level|--log-level)
@@ -153,9 +138,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --train_test, --train-test BOOL         Enable train/test split (default: False)"
             echo "  --lr, --learning_rate FLOAT              Learning rate (default: 0.1)"
             echo "  --epochs, --epoch INT                    Number of epochs (default: 500)"
-            echo "  --lin2_clip, --lin2-clip FLOAT          Clip lin2 before exp (default: None)"
-            echo "  --gate_mode, --gate-mode STR            Gate mode: hard_abs or smooth_abs (default: hard_abs)"
-            echo "  --gate_sharpness, --gate-sharpness FLOAT  Sharpness for smooth_abs gate (default: 20.0)"
             echo "  --refits, --refits-number INT           Number of refits (default: 10)"
             echo "  --clip_norm, --clip-norm FLOAT          Clip gradient norm (default: 10.0)"
             echo "  --annotations, --annotations-list LIST    List of annotations to use (default: None)"
@@ -176,25 +158,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 
-annotations_args=()
-if [ "${#annotations[@]}" -gt 0 ]; then
-    echo "Using annotations: ${annotations[@]}"
-    echo "Setting annotation_dir to raw annotations directory..."
-    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/
-    annotations_args=(--annotations "${annotations[@]}")
-    negative_annotations=True
-
-fi
-
 maf_args=()
 if [ -n "$maf_threshold" ] && [ "$maf_threshold" != "None" ] && [ "$maf_threshold" != "null" ]; then
   maf_args=(--maf_threshold "$maf_threshold")
 fi
 
-lin2_clip_args=()
-if [ -n "$lin2_clip" ] && [ "$lin2_clip" != "None" ] && [ "$lin2_clip" != "null" ]; then
-  lin2_clip_args=(--lin2_clip "$lin2_clip")
-fi
 
 
 python -u emmental_joint.py --config $config_file \
@@ -213,11 +181,8 @@ python -u emmental_joint.py --config $config_file \
                          "${annotations_args[@]}" \
                          --threshold_prior_alpha $threshold_prior_alpha \
                          --threshold_prior_beta $threshold_prior_beta \
-                         --gate_mode $gate_mode \
-                         --gate_sharpness $gate_sharpness \
                          --maf_beta $maf_beta \
-                         "${maf_args[@]}" \
-                         "${lin2_clip_args[@]}" \
+                         "${maf_args[@]}"
 
 # Move SLURM output files to the run output directory if it exists
 if [ -n "$joint_output_dir" ]; then

@@ -21,7 +21,6 @@ lr: 0.01   # Learning rate
 epochs: 500  # Number of training epochs
 n_posterior: 50  # Number of posterior samples
 refits: 1
-lin2_clip: null  # Optional clamp for lin2 before exp (e.g. 8.0 or 10.0 to stabilize)
 maf_threshold: null
 annotations: ['chrombpnet', 'dist_to_TSS', 'ABC', 'CADD_raw', 'Eigen-raw', 'enformer', 'lof', 'missense', 'splice', 'MAP20', 'alphamissense', 'gnomAD_genomes_POPMAX_AF']
 

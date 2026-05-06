@@ -79,9 +79,6 @@ class EmmentalJoint(PyroModule):
                     threshold,
                     tau1=tau1,
                     tau2=tau2,
-                    lin2_clip=config.get("lin2_clip", None),
-                    gate_mode=config.get("gate_mode", "hard_abs"),
-                    gate_sharpness=config.get("gate_sharpness", 20.0),
                     logger=logger,
             )
             
@@ -163,10 +160,7 @@ class EmmentalPerGene(PyroModule):
                     maf_weights_gene,
                     th_use,
                     tau1=tau1_use,
-                    tau2=tau2_use,
-                    lin2_clip=config.get("lin2_clip", None),
-                    gate_mode=config.get("gate_mode", "hard_abs"),
-                    gate_sharpness=config.get("gate_sharpness", 20.0),
+                    tau2=tau2_use
             )
             
             mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ 
@@ -243,10 +237,7 @@ def simulate_expression(data, config, mode="linear"):
                 maf_weights_gene,
                 threshold,
                 tau1=tau1,
-                tau2=tau2,
-                lin2_clip=config.get("lin2_clip", None),
-                gate_mode=config.get("gate_mode", "hard_abs"),
-                gate_sharpness=config.get("gate_sharpness", 20.0),
+                tau2=tau2
         )
         
         mu = rho_g[gene_idx] * w_g[gene_idx] * lambda_ 
