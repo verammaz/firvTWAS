@@ -212,16 +212,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 
-annotations_args=()
-if [ "${#annotations[@]}" -gt 0 ]; then
-    echo "Using annotations: ${annotations[@]}"
-    echo "Setting annotation_dir to raw annotations directory..."
-    annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/
-    annotations_args=(--annotations "${annotations[@]}")
-    negative_annotations=True
-
-fi
-
 maf_args=()
 if [ -n "$maf_threshold" ] && [ "$maf_threshold" != "None" ] && [ "$maf_threshold" != "null" ]; then
   maf_args=(--maf_threshold "$maf_threshold")
@@ -274,6 +264,7 @@ python -u emmental_joint.py --config $config_file \
                          "${threshold_init_args[@]}" \
                          "${threshold_quantile_args[@]}" \
                          --no_wg $no_wg \
+                         --maf_beta $maf_beta \
                          "${maf_args[@]}" \
                          --normalize_G $normalize_G \
                          --collapsed_model $collapsed_model \

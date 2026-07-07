@@ -193,15 +193,15 @@ def process_annotations(Z, config, logger):
         logger.info(f"Processing annotation: {annotation}")
         if annotation == 'chrombpnet':
             Z_cols.append('chrombpnet_ATAC')
-            Z['chrombpnet_ATAC'] = Z.filter(like="chrombpnet_ATAC").mean(axis=1) #avergae over cell types (assume already scaled)
+            Z['chrombpnet_ATAC'] = Z.filter(like="chrombpnet_ATAC").mean(axis=1) #average over cell types (assume already scaled)
             Z_cols.append('chrombpnet_H3K27ac')
-            Z['chrombpnet_H3K27ac'] = Z.filter(like="chrombpnet_H3K27ac").mean(axis=1) #avergae over cell types (assume already scaled)
+            Z['chrombpnet_H3K27ac'] = Z.filter(like="chrombpnet_H3K27ac").mean(axis=1) #average over cell types (assume already scaled)
         elif annotation == 'dist_to_TSS':
             Z_cols.append('dist_to_TSS')
             Z['dist_to_TSS'] = Z['dist_to_TSS'].clip(lower=0)
         elif annotation == 'ABC':
             Z_cols.append('ABC')
-            Z['ABC'] = Z.filter(like="ABC").mean(axis=1) #avergae over cell types 
+            Z['ABC'] = Z.filter(like="ABC").mean(axis=1) #average over cell types 
             # these should be positive
             assert Z['ABC'].min() >= 0, "ABC annotations should be positive"
         elif annotation == 'enformer':
@@ -211,8 +211,8 @@ def process_annotations(Z, config, logger):
             # average _TF_delta_max over cell types
             Z_cols.append('enformer_max')
             Z['enformer_max'] = Z.filter(like="_TF_delta_max").mean(axis=1)
-        elif annotation.startswith('gnomAD'):
-            Z_cols.append('gnomAD_genomes_POPMAX_AF')
+        elif annotation.startswith('gnomAD'): 
+            Z_cols.append('gnomAD_genomes_POPMAX_AF') # keep as is (globally scaled annotations should be passed in config['annotation_dir'])
         else:
             if annotation not in Z.columns:
                 logger.warning(f"Annotation {annotation} not found in Z columns. Skipping.")

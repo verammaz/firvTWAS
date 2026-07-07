@@ -124,7 +124,7 @@ class EmmentalJoint(PyroModule):
                     threshold,
                     tau1=tau1,
                     tau2=tau2,
-                    logger=logger
+                    logger=logger,
             )
             
             if config.get('no_rhog', False):
