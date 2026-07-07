@@ -116,6 +116,13 @@ def merge_config_from_joint_dir(config, joint_dir):
             "covariates_path",
             "brr_results_dir",
             "joint_output_dir",
+            "no_wg",
+            "no_rhog",
+            "collapsed_model",
+            "no_T",
+            "normalize_G",
+            "threshold_prior_alpha",
+            "threshold_prior_beta",
         ]
         skip_overlay = {
             "pergene_output_dir",
@@ -124,17 +131,64 @@ def merge_config_from_joint_dir(config, joint_dir):
             "epochs",
             "lr",
             "n_posterior",
-            "refits",
             "log_level",
             "log_file",
             "clip_norm",
+            # Per-gene-only overrides; maf_threshold / brr_results_dir come from joint/config.yaml
+            # (same values as the config file used for the joint run).
         }
         for k in keys_to_copy:
             if k in skip_overlay:
                 continue
             if k in joint_cfg and joint_cfg[k] is not None:
                 config[k] = joint_cfg[k]
+        if joint_cfg.get("refits") is not None:
+            config["_joint_refits"] = joint_cfg["refits"]
     return config
+
+
+def _write_pergene_root_config(
+    pergene_root: str,
+    config: dict,
+    *,
+    joint_run_ids: list = None,
+) -> None:
+    """Single ``pergene/config.yaml`` (chromosome omitted; same as joint layout)."""
+    os.makedirs(pergene_root, exist_ok=True)
+    config_save = utils.config_for_yaml_save(
+        {
+            k: v
+            for k, v in config.items()
+            if k not in ("chromosome", "genes", "gene_list", "_joint_refits")
+        }
+    )
+    if joint_run_ids is not None:
+        config_save["refits"] = [int(x) for x in joint_run_ids]
+    path = os.path.join(pergene_root, "config.yaml")
+    with open(path, "w") as f:
+        yaml.dump(config_save, f)
+
+
+def summarize_pergene_refit(
+    losses_all: list,
+    train_r2_all: dict,
+    test_r2_all: dict,
+    refit_number: int,
+) -> dict:
+    """Compact diagnostics for one per-gene refit (all genes on this chromosome)."""
+    train_vals = list(train_r2_all.values()) if train_r2_all else []
+    test_vals = list(test_r2_all.values()) if test_r2_all else []
+    return {
+        "refit": refit_number,
+        "n_genes_fit": len(train_r2_all),
+        "final_loss_mean": float(np.mean(losses_all[-100:])) if losses_all else float("nan"),
+        "train_avg_r2": float(np.mean(train_vals)) if train_vals else float("nan"),
+        "train_prop_r2_gt_001": float(np.mean([r > 0.01 for r in train_vals])) if train_vals else float("nan"),
+        "train_prop_r2_gt_01": float(np.mean([r > 0.1 for r in train_vals])) if train_vals else float("nan"),
+        "test_avg_r2": float(np.mean(test_vals)) if test_vals else float("nan"),
+        "test_prop_r2_gt_001": float(np.mean([r > 0.01 for r in test_vals])) if test_vals else float("nan"),
+        "test_prop_r2_gt_01": float(np.mean([r > 0.1 for r in test_vals])) if test_vals else float("nan"),
+    }
 
 
 def resolve_gene_list(config):
@@ -161,16 +215,18 @@ def _log_run_timing(logger, started_wall: datetime, started_secs: float, *, stat
 # Main fit function
 # ---------------------------------------------------------------------------
 
-def make_init_loc_fn(data, eps=1e-3):
+def make_init_loc_fn(data, config=None, eps=1e-3):
     """
     Build an init_loc_fn(site) for per-gene warm start using BRR betas.
 
-    - w_g -> 1
+    - w_g -> 1 (or 0 if config init_wg_zero)
     - rho_g -> 0.5
     - Z_{gene} -> BRR-aligned initialization with zeros for missing variants
     - everything else -> 0
     """
     device = data.device
+    cfg = config or {}
+    wg_init = 0.0 if cfg.get("init_wg_zero", False) else 1.0
 
     def _get_brr_beta_vector(gene_name):
         start_idx, end_idx = data.gene_indices[gene_name]
@@ -208,7 +264,7 @@ def make_init_loc_fn(data, eps=1e-3):
             return None
 
         if name == "w_g":
-            return torch.ones(data.num_genes, device=device)
+            return torch.full((data.num_genes,), wg_init, device=device)
         if name == "rho_g":
             return torch.full((data.num_genes,), 0.5, device=device)
 
@@ -235,23 +291,42 @@ def make_init_loc_fn(data, eps=1e-3):
     return init_loc_fn
 
 
-def fit_emmental(data, config):
+def fit_emmental(data, config, simulated_parameters=None):
     """
     Fit per-gene Emmental with fixed global τ and T from joint outputs.
 
     INPUT:
-        - data: dict with 'Train' and 'Test' DataTensors (BRR alphas set on data for obs. noise)
+        - data: Train DataTensors (BRR alphas set on data for obs. noise)
         - config: configuration dictionary
+        - simulated_parameters: optional ground-truth dict from simulate_expression
     OUTPUT:
         - losses, times, posterior_stats, beta_samples, mu_samples, simulated_parameters
     """
     logger = utils.get_logger()
+    if config.get("collapsed_model", False):
+        from emmental_collapsed_fit import fit_pergene_collapsed
+        from joint_guide_setup import pergene_wg_rhog_fully_ablated
+
+        logger.info("Using collapsed per-gene model (beta integrated out).")
+        if pergene_wg_rhog_fully_ablated(config):
+            logger.info(
+                "no_wg + no_rhog: deterministic collapsed beta (no SVI on w_g/rho_g)."
+            )
+        init_loc_fn = (
+            make_init_loc_fn(data, config)
+            if simulated_parameters is None and data.brr_betas is not None
+            else None
+        )
+        return fit_pergene_collapsed(
+            data, config, init_loc_fn=init_loc_fn, simulated_parameters=simulated_parameters
+        )
+
     pyro.clear_param_store()
 
-    model = EmmentalPerGene(config, data)
+    model = EmmentalPerGene(config, data, simulated_parameters=simulated_parameters)
     use_brr_init = data.brr_betas is not None
     if use_brr_init:
-        guide = AutoDiagonalNormal(model, init_loc_fn=make_init_loc_fn(data))
+        guide = AutoDiagonalNormal(model, init_loc_fn=make_init_loc_fn(data, config))
     else:
         guide = AutoDiagonalNormal(model)
 
@@ -304,91 +379,28 @@ def fit_emmental(data, config):
     return losses, times, posterior_stats, beta_samples, mean_samples
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def fit_chromosome_genes(
+    chr_genes,
+    config,
+    X,
+    Y,
+    train_idx,
+    test_idx,
+    train_sample_ids,
+    test_sample_ids,
+    brr_betas,
+    brr_alphas,
+    tau1,
+    tau2,
+    th,
+    device,
+    logger,
+):
+    """
+    Fit every gene on the chromosome once (single refit).
 
-
-def main():
-    args = utils.parse_args()
-    yaml_config = utils.load_yaml(args.config) if args.config else None
-    config = utils.fill_defaults(args, yaml_config)
-    logger = utils.get_logger()
-
-    if config.get("joint_output_dir"):
-        if not os.path.exists(config["joint_output_dir"]):
-            raise ValueError(f"Joint output directory {config['joint_output_dir']} does not exist.")
-        merge_config_from_joint_dir(config, config["joint_output_dir"])
-    else:
-        raise ValueError("Provide --joint_output_dir to the emmental_joint output root.")
-
-    if config.get("chromosome", None) is None:
-        raise ValueError("Chromosome not specified in config")
-    # SLURM array values may arrive as ints; normalize for path joins.
-    config["chromosome"] = str(config["chromosome"])
-
-    OUTPUT = config.get("pergene_output_dir", None)
-    if not OUTPUT:
-        # default to sibling of joint output dir
-        logger.info(f"No pergene output directory provided, using sibling of joint output directory: {config['joint_output_dir']}")
-        OUTPUT = os.path.join(os.path.dirname(config["joint_output_dir"]), "pergene")
-        config['pergene_output_dir'] = OUTPUT
-    OUTPUT = os.path.join(OUTPUT, f"chr{config['chromosome']}")
-    logger.info(f"Output directory: {OUTPUT}")
-    os.makedirs(OUTPUT, exist_ok=True)
-
-    log_level = config.get("log_level", "INFO")
-    log_file = config.get("log_file", None)
-    logger = utils.setup_logging(log_level, log_file)
-    run_started_wall = datetime.now().astimezone()
-    run_started_secs = time.time()
-    logger.info(f"Run started at: {run_started_wall.strftime('%Y-%m-%d %H:%M:%S %z')}")
-
-    config.pop('gene_list', None)
-    logger.info("=" * 50)
-    logger.info("EMMENTAL - Per-Gene (fixed joint τ, T)")
-    logger.info("=" * 50)
-    for key, value in sorted(config.items()):
-        logger.info(f"  {key}: {value}")
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-    
-    # Get genes for chromosome
-    chr_genes = load_data.get_chr_genes(config)
-    config['genes'] = chr_genes # used by data loading functions
-
-    # Load data
-    logger.info("Loading phenotype and covariate data...")
-    X, Y, train_idx, test_idx = load_data.load_residualized_covariates(config, device)
-
-    # Load Bayesian Ridge Regression results
-    if config.get('brr_results_dir', None) is not None:
-        logger.info("Loading Bayesian Ridge Regression results...")
-        brr_results = load_data.load_brr_results(config)
-    else:
-        brr_results = None
-
-    # Load Bayesian Ridge Regression betas and alphas
-    if brr_results is not None:
-        brr_betas = brr_results.get('betas', None)
-        brr_alphas = brr_results.get('alphas', None)
-    else:
-        brr_betas = None
-        brr_alphas = None
-
-    mean_df, th, tau1, tau2 = load_data.load_tau_threshold(config)
-    mean_path = os.path.join(OUTPUT, "tau_T.csv")
-    mean_df.to_csv(mean_path, index=False)
-    logger.info(f"Wrote averaged τ / T to {mean_path}")
-
-    with open(os.path.join(OUTPUT, "config.yaml"), "w") as f: # one per chromosome subdir
-        config.pop('genes', None)
-        config.pop('gene_list', None)
-        config.pop('refits', None)
-        yaml.dump(dict(config), f)
-
-    logger.info("Starting per-gene fitting loop...")
+    Returns aggregated artifacts for ``save_results``.
+    """
     losses_all, times_all = [], []
     history_rows = []
     posterior_stats_all = {}
@@ -399,16 +411,20 @@ def main():
     variant_ids_G_all = []
     variant_ids_Z_all = []
     gene_indices_all = {}
-   
-    train_sample_ids = X.index[train_idx]
-    test_sample_ids = X.index[test_idx]
+
     for gene_idx, gene_name in enumerate(tqdm(chr_genes)):
         try:
             config["genes"] = [gene_name]
             G, Z, variant_ids_G, variant_ids_Z = load_data.load_genes(config)
+            G, Z, variant_ids_G, variant_ids_Z, maf_weights = (
+                load_data.prepare_genotypes_for_training(
+                    G, Z, variant_ids_G, variant_ids_Z, train_sample_ids, config, device
+                )
+            )
             gene_key = gene_name.split("/")[-1] if "/" in gene_name else gene_name
 
             data = {}
+            train_variant_columns = None
             for group_idx, sample_ids, split_name in zip(
                 [train_idx, test_idx],
                 [train_sample_ids, test_sample_ids],
@@ -429,11 +445,13 @@ def main():
                     brr_alphas_arg,
                     device,
                     config,
-                    train_G_for_maf_filter=G.loc[train_sample_ids],
-                    forced_variant_columns=None,
+                    forced_variant_columns=train_variant_columns,
+                    maf_weights_precomputed=maf_weights,
+                    variants_pre_filtered=True,
                 )
+                if split_name == "Train":
+                    train_variant_columns = group_data.variant_column_names
                 data[split_name] = group_data
-                # EmmentalPerGene registers these as torch buffers.
                 data[split_name].tau1 = torch.as_tensor(tau1, dtype=torch.float32, device=device)
                 data[split_name].tau2 = torch.as_tensor(tau2, dtype=torch.float32, device=device)
                 data[split_name].threshold = torch.as_tensor(th, dtype=torch.float32, device=device)
@@ -441,13 +459,12 @@ def main():
             logger.info(f"\nGene {gene_idx + 1}/{len(chr_genes)}: {gene_name}")
             logger.info(f"  Samples (train/test): {data['Train'].G.shape[0]} / {data['Test'].G.shape[0]}")
             logger.info(f"  Variants: {data['Train'].G.shape[1]}")
-            th = float(data["Train"].threshold.item()) if hasattr(data["Train"].threshold, "item") else float(data["Train"].threshold)
-            # Missing BRR alpha should not abort the per-gene fit; only affects this diagnostic log.
+            th_gene = float(data["Train"].threshold.item()) if hasattr(data["Train"].threshold, "item") else float(data["Train"].threshold)
             alpha_val = None if brr_alphas is None else brr_alphas.get(gene_key)
             if alpha_val is None:
-                logger.info(f"  STD (1/sqrt(alpha)): N/A (missing BRR alpha)  |  Threshold T: {th:.4f}")
+                logger.info(f"  STD (1/sqrt(alpha)): N/A (missing BRR alpha)  |  Threshold T: {th_gene:.4f}")
             else:
-                logger.info(f"  STD (1/sqrt(alpha)): {1.0 / np.sqrt(alpha_val):.4f}  |  Threshold T: {th:.4f}")
+                logger.info(f"  STD (1/sqrt(alpha)): {1.0 / np.sqrt(alpha_val):.4f}  |  Threshold T: {th_gene:.4f}")
 
             losses, times, posterior_stats, beta_samples, mean_samples = fit_emmental(data["Train"], config)
 
@@ -481,50 +498,252 @@ def main():
             train_r2_all.update(train_r2)
             test_r2_all.update(test_r2)
 
-            # Keep per-gene variant IDs for downstream output files.
-            saved_genes = set(beta_samples.keys()) | set(mean_samples.keys())
-            for saved_gene in sorted(saved_genes):
+            train_dt = data["Train"]
+            for saved_gene in sorted(set(beta_samples.keys())):
                 if saved_gene in gene_indices_all:
                     continue
-                n_variants = len(variant_ids_G)
-                start_idx = len(variant_ids_G_all)
-                end_idx = start_idx + n_variants
-                gene_indices_all[saved_gene] = (start_idx, end_idx)
-                variant_ids_G_all.extend(variant_ids_G)
-                variant_ids_Z_all.extend(variant_ids_Z)
+                if saved_gene not in train_dt.gene_indices:
+                    logger.warning(
+                        f"Gene {saved_gene} missing from train_dt.gene_indices; "
+                        "skipping variant ID registration for beta outputs."
+                    )
+                    continue
+                start_idx, end_idx = train_dt.gene_indices[saved_gene]
+                variant_cols = train_dt.variant_column_names[start_idx:end_idx]
+                global_start = len(variant_ids_G_all)
+                global_end = global_start + len(variant_cols)
+                gene_indices_all[saved_gene] = (global_start, global_end)
+                variant_ids_G_all.extend(variant_cols)
+                variant_ids_Z_all.extend(variant_cols)
 
         except Exception as e:
             logger.warning(f"Issue with {gene_name}: {e}")
             continue
 
-    if not beta_samples_all and not mean_samples_all:
+    return {
+        "losses_all": losses_all,
+        "times_all": times_all,
+        "history_rows": history_rows,
+        "posterior_stats_all": posterior_stats_all,
+        "beta_samples_all": beta_samples_all,
+        "mean_samples_all": mean_samples_all,
+        "train_r2_all": train_r2_all,
+        "test_r2_all": test_r2_all,
+        "variant_ids_G_all": variant_ids_G_all,
+        "variant_ids_Z_all": variant_ids_Z_all,
+        "gene_indices_all": gene_indices_all,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main():
+    args = utils.parse_args()
+    yaml_config = utils.load_yaml(args.config) if args.config else None
+    config = utils.fill_defaults(args, yaml_config)
+    use_refit = bool(config.get("refit", False))
+    logger = utils.get_logger()
+
+    if config.get("joint_output_dir"):
+        if not os.path.exists(config["joint_output_dir"]):
+            raise ValueError(f"Joint output directory {config['joint_output_dir']} does not exist.")
+        merge_config_from_joint_dir(config, config["joint_output_dir"])
+    else:
+        raise ValueError("Provide --joint_output_dir to the emmental_joint output root.")
+
+    if config.get("chromosome", None) is None:
+        raise ValueError("Chromosome not specified in config")
+    config["chromosome"] = str(config["chromosome"])
+
+    PERGENE_ROOT = config.get("pergene_output_dir", None)
+    if not PERGENE_ROOT:
+        logger.info(
+            "No pergene output directory provided, using sibling of joint output directory: %s",
+            config["joint_output_dir"],
+        )
+        PERGENE_ROOT = os.path.join(os.path.dirname(config["joint_output_dir"]), "pergene")
+        config["pergene_output_dir"] = PERGENE_ROOT
+    PERGENE_ROOT = os.path.abspath(PERGENE_ROOT)
+    os.makedirs(PERGENE_ROOT, exist_ok=True)
+
+    chr_tag = f"chr{config['chromosome']}"
+    joint_dir = os.path.abspath(config["joint_output_dir"])
+
+    if use_refit:
+        joint_cfg_for_runs = dict(config)
+        if config.get("_joint_refits") is not None:
+            joint_cfg_for_runs["refits"] = config["_joint_refits"]
+        joint_run_ids = load_data.resolve_joint_refit_run_ids(joint_dir, joint_cfg_for_runs)
+        logger.info("Refit mode: %d per-gene refit(s) aligned to joint run ids %s", len(joint_run_ids), joint_run_ids)
+    else:
+        joint_run_ids = None
+        logger.info("Single-fit mode: using averaged joint tau/T")
+
+    log_level = config.get("log_level", "INFO")
+    log_file = config.get("log_file", None)
+    logger = utils.setup_logging(log_level, log_file)
+    run_started_wall = datetime.now().astimezone()
+    run_started_secs = time.time()
+    logger.info(f"Run started at: {run_started_wall.strftime('%Y-%m-%d %H:%M:%S %z')}")
+
+    config.pop('gene_list', None)
+    logger.info("=" * 50)
+    logger.info(
+        "EMMENTAL - Per-Gene (%s)",
+        "refits matched to joint run_*" if use_refit else "single fit, averaged joint tau/T",
+    )
+    logger.info("Pergene root: %s  |  Chromosome: %s", PERGENE_ROOT, chr_tag)
+    logger.info("=" * 50)
+    for key, value in sorted(config.items()):
+        logger.info(f"  {key}: {value}")
+    if config.get("collapsed_model", False):
+        logger.info("Inference: collapsed model (beta integrated out per gene)")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    
+    # Get genes for chromosome
+    chr_genes = load_data.get_chr_genes(config)
+    config['genes'] = chr_genes # used by data loading functions
+
+    # Load data
+    logger.info("Loading phenotype and covariate data...")
+    X, Y, train_idx, test_idx = load_data.load_residualized_covariates(config, device)
+
+    # Load Bayesian Ridge Regression results
+    if config.get('brr_results_dir', None) is not None:
+        logger.info("Loading Bayesian Ridge Regression results...")
+        brr_results = load_data.load_brr_results(config)
+    else:
+        brr_results = None
+
+    # Load Bayesian Ridge Regression betas and alphas
+    if brr_results is not None:
+        brr_betas = brr_results.get('betas', None)
+        brr_alphas = brr_results.get('alphas', None)
+    else:
+        brr_betas = None
+        brr_alphas = None
+
+    train_sample_ids = X.index[train_idx]
+    test_sample_ids = X.index[test_idx]
+
+    refit_summaries = []
+    all_history_rows = []
+    any_saved = False
+
+    refit_plan = (
+        [(rid, os.path.join(PERGENE_ROOT, f"run_{rid}", chr_tag)) for rid in joint_run_ids]
+        if use_refit
+        else [(None, os.path.join(PERGENE_ROOT, chr_tag))]
+    )
+
+    for refit_idx, (joint_run_id, output_dir) in enumerate(refit_plan):
+        if use_refit:
+            logger.info(
+                f"\n{'=' * 50}\nREFIT {refit_idx + 1}/{len(refit_plan)} "
+                f"(joint run_{joint_run_id} -> {output_dir})\n{'=' * 50}"
+            )
+            mean_df, th, tau1, tau2 = load_data.load_tau_threshold_from_joint_run(
+                joint_dir, joint_run_id
+            )
+        else:
+            logger.info(f"\n{'=' * 50}\nSINGLE FIT -> {output_dir}\n{'=' * 50}")
+            mean_df, th, tau1, tau2 = load_data.load_tau_threshold(config)
+
+        os.makedirs(output_dir, exist_ok=True)
+        mean_df.to_csv(os.path.join(output_dir, "tau_T.csv"), index=False)
+        logger.info(f"Wrote tau/T to {os.path.join(output_dir, 'tau_T.csv')}")
+
+        fit_out = fit_chromosome_genes(
+            chr_genes,
+            config,
+            X,
+            Y,
+            train_idx,
+            test_idx,
+            train_sample_ids,
+            test_sample_ids,
+            brr_betas,
+            brr_alphas,
+            tau1,
+            tau2,
+            th,
+            device,
+            logger,
+        )
+
+        if not fit_out["beta_samples_all"] and not fit_out["mean_samples_all"]:
+            logger.warning("No successful gene fits for this pass; skipping save.")
+            continue
+
+        save_results(
+            output_dir=output_dir,
+            losses=np.asarray(fit_out["losses_all"], dtype=float),
+            times=np.asarray(fit_out["times_all"], dtype=float),
+            posterior_stats=fit_out["posterior_stats_all"],
+            annotations=config.get("annotations", []),
+            beta_samples=fit_out["beta_samples_all"],
+            mu_samples=None,
+            mean_samples=fit_out["mean_samples_all"],
+            train_r2=fit_out["train_r2_all"],
+            test_r2=fit_out["test_r2_all"],
+            variant_ids_G=fit_out["variant_ids_G_all"],
+            variant_ids_Z=fit_out["variant_ids_Z_all"],
+            gene_indices=fit_out["gene_indices_all"],
+            mean_sample_ids=list(train_sample_ids),
+        )
+        logger.info(f"Saved outputs to {output_dir}")
+        any_saved = True
+        all_history_rows.extend(fit_out["history_rows"])
+
+        if use_refit:
+            summary = summarize_pergene_refit(
+                fit_out["losses_all"],
+                fit_out["train_r2_all"],
+                fit_out["test_r2_all"],
+                refit_idx + 1,
+            )
+            refit_summaries.append(summary)
+
+    if not any_saved:
         logger.warning("No per-gene fits completed successfully; nothing to save.")
         _log_run_timing(logger, run_started_wall, run_started_secs, status="ended (no successful fits)")
         return
 
-    if history_rows:
-        history_df = pd.DataFrame(history_rows)
-        history_path = os.path.join(OUTPUT, "loss_time_by_gene.csv")
-        history_df.to_csv(history_path, index=False)
+    if use_refit:
+        history_path = os.path.join(PERGENE_ROOT, f"loss_time_by_gene_{chr_tag}.csv")
+    else:
+        history_path = os.path.join(PERGENE_ROOT, chr_tag, "loss_time_by_gene.csv")
+    if all_history_rows:
+        pd.DataFrame(all_history_rows).to_csv(history_path, index=False)
         logger.info(f"Saved per-gene training history to {history_path}")
 
-    logger.info("Saving aggregated per-gene outputs...")
-    save_results(
-        output_dir=OUTPUT,
-        losses=np.asarray(losses_all, dtype=float),
-        times=np.asarray(times_all, dtype=float),
-        posterior_stats=posterior_stats_all,
-        annotations=config.get("annotations", []),
-        beta_samples=beta_samples_all,
-        mu_samples=None,
-        mean_samples=mean_samples_all,
-        train_r2=train_r2_all,
-        test_r2=test_r2_all,
-        variant_ids_G=variant_ids_G_all,
-        variant_ids_Z=variant_ids_Z_all,
-        gene_indices=gene_indices_all,
+    if refit_summaries:
+        logger.info("\nRefit summary diagnostics:")
+        header = (
+            "refit | n_genes | final_loss_mean | train_avg_r2 | train_prop>0.01 | train_prop>0.1 | "
+            "test_avg_r2 | test_prop>0.01 | test_prop>0.1"
+        )
+        logger.info(header)
+        for s in refit_summaries:
+            logger.info(
+                f"{s['refit']:>5d} | {s['n_genes_fit']:>7d} | {s['final_loss_mean']:.4f} | "
+                f"{s['train_avg_r2']:.4f} | {s['train_prop_r2_gt_001']:.4f} | {s['train_prop_r2_gt_01']:.4f} | "
+                f"{s['test_avg_r2']:.4f} | {s['test_prop_r2_gt_001']:.4f} | {s['test_prop_r2_gt_01']:.4f}"
+            )
+
+    config.pop("_joint_refits", None)
+    _write_pergene_root_config(
+        PERGENE_ROOT,
+        config,
+        joint_run_ids=joint_run_ids if use_refit else None,
     )
-    logger.info(f"Saved aggregated per-gene outputs to {OUTPUT}")
+    logger.info(f"Config saved to {os.path.join(PERGENE_ROOT, 'config.yaml')}")
+    logger.info("\nDone!")
     _log_run_timing(logger, run_started_wall, run_started_secs, status="finished")
 
 

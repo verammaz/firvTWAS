@@ -3,8 +3,8 @@
 #SBATCH --job-name=emmental-pergene
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j_%a.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j_%a.err
-#SBATCH --time=10:00:00
-#SBATCH --mem=100G  
+#SBATCH --time=20:00:00
+#SBATCH --mem=24G  
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=cpu
 #SBATCH --array=1-22
@@ -31,6 +31,14 @@ clip_norm=10.0
 lr=0.01
 epochs=1000
 log_level=INFO
+refit=""
+collapsed_model="false"
+init_wg_zero="false"
+wg_rhog_delta_guide="false"
+early_stop=""
+early_stop_min_epochs=""
+early_stop_patience=""
+early_stop_rel_tol=""
 
 # if not submitted as an array job, run for chromosome 21
 if [ -z "$SLURM_ARRAY_TASK_ID" ]; then
@@ -70,8 +78,36 @@ while [[ $# -gt 0 ]]; do
             clip_norm="$2"
             shift 2
             ;;
-        --refits|--refits-number)   
-            refits="$2"
+        --refit)
+            refit="true"
+            shift
+            ;;
+        --collapsed_model|--collapsed-model)
+            collapsed_model="$2"
+            shift 2
+            ;;
+        --init_wg_zero|--init-wg-zero)
+            init_wg_zero="$2"
+            shift 2
+            ;;
+        --wg_rhog_delta_guide|--wg-rhog-delta-guide)
+            wg_rhog_delta_guide="$2"
+            shift 2
+            ;;
+        --early_stop|--early-stop)
+            early_stop="$2"
+            shift 2
+            ;;
+        --early_stop_min_epochs|--early-stop-min-epochs)
+            early_stop_min_epochs="$2"
+            shift 2
+            ;;
+        --early_stop_patience|--early-stop-patience)
+            early_stop_patience="$2"
+            shift 2
+            ;;
+        --early_stop_rel_tol|--early-stop-rel-tol)
+            early_stop_rel_tol="$2"
             shift 2
             ;;
         -h|--help)
@@ -86,6 +122,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --epochs, --epoch INT                    Number of epochs (default: 500)"
             echo "  --clip_norm, --clip-norm FLOAT          Clip gradient norm (default: 10.0)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
+            echo "  --refit                                  Match joint refits (run_N/chr*/; tau/T from joint run_N)"
+            echo "  --collapsed_model BOOL                   Integrate out beta (collapsed likelihood)"
+            echo "  --init_wg_zero BOOL                      Initialize w_g guide loc to 0 (default: false)"
+            echo "  --early_stop BOOL                        Stop when ELBO plateaus (default on for collapsed)"
+            echo "  --early_stop_min_epochs INT              Min epochs before early stop (default: 50)"
+            echo "  --early_stop_patience INT                Patience epochs (default: 30)"
+            echo "  --early_stop_rel_tol FLOAT               Relative improvement threshold (default: 1e-3)"
             echo "  -h, --help                               Show this help message"
             exit 0
             ;;
@@ -104,15 +147,46 @@ if [ ! -d "$joint_output_dir" ]; then
     exit 1
 fi
 
+# Collapsed per-gene: only w_g/rho_g are fit; ELBO plateaus quickly (~100-150 epochs).
+if [ "$collapsed_model" = "true" ] && [ "$epochs" -eq 1000 ]; then
+    epochs=300
+    echo "Collapsed model: defaulting to epochs=300 (override with --epochs)."
+fi
 
-python -u emmental_pergene.py --config $config_file \
-                         --pergene_output_dir $pergene_output_dir \
-                         --joint_output_dir $joint_output_dir \
-                         --chromosome $chromosome \
-                         --lr $lr \
-                         --epochs $epochs \
-                         --clip_norm $clip_norm \
-                         --log_level $log_level
+pergene_py_args=(
+    --config "$config_file"
+    --pergene_output_dir "$pergene_output_dir"
+    --joint_output_dir "$joint_output_dir"
+    --chromosome "$chromosome"
+    --lr "$lr"
+    --epochs "$epochs"
+    --clip_norm "$clip_norm"
+    --log_level "$log_level"
+)
+if [ "$refit" = "true" ]; then
+    pergene_py_args+=(--refit true)
+fi
+pergene_py_args+=(--collapsed_model "$collapsed_model")
+if [ "$init_wg_zero" = "true" ]; then
+    pergene_py_args+=(--init_wg_zero true)
+fi
+if [ "$wg_rhog_delta_guide" = "true" ]; then
+    pergene_py_args+=(--wg_rhog_delta_guide true)
+fi
+if [ -n "$early_stop" ]; then
+    pergene_py_args+=(--early_stop "$early_stop")
+fi
+if [ -n "$early_stop_min_epochs" ]; then
+    pergene_py_args+=(--early_stop_min_epochs "$early_stop_min_epochs")
+fi
+if [ -n "$early_stop_patience" ]; then
+    pergene_py_args+=(--early_stop_patience "$early_stop_patience")
+fi
+if [ -n "$early_stop_rel_tol" ]; then
+    pergene_py_args+=(--early_stop_rel_tol "$early_stop_rel_tol")
+fi
+
+python -u emmental_pergene.py "${pergene_py_args[@]}"
                         
 
 # Move SLURM output files to the run output directory if it exists

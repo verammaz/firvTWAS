@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import time
 from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 import torch
 import utils
 from tqdm import tqdm
@@ -11,6 +12,22 @@ from collections import defaultdict
 
 def get_logger():
     return utils.get_logger()
+
+
+def get_train_test_indices(covariates_path: str):
+    """
+    Train/test row indices (ROSMAP DLPFC held out as test), matching joint/per-gene splits.
+    """
+    cov = pd.read_csv(covariates_path, sep="\t").set_index("sample_id")
+    train_mask = ~(
+        (cov["cohort"] == "ROSMAP")
+        & (cov["tissue"] == "Dorsolateral Pre-frontal Cortex (DLPFC)")
+    )
+    test_mask = (
+        (cov["cohort"] == "ROSMAP")
+        & (cov["tissue"] == "Dorsolateral Pre-frontal Cortex (DLPFC)")
+    )
+    return np.where(train_mask)[0], np.where(test_mask)[0]
 
 
 def variant_maf_series(G: pd.DataFrame) -> pd.Series:
@@ -22,6 +39,87 @@ def variant_maf_series(G: pd.DataFrame) -> pd.Series:
     maf = np.round(arr).mean(axis=0) / 2.0
     maf = np.where(maf > 0.5, 1.0 - maf, maf)
     return pd.Series(maf, index=G.columns)
+
+
+def _effective_maf_threshold(config) -> Optional[float]:
+    maf_thr = config.get("maf_threshold", None)
+    if maf_thr is None:
+        return None
+    if isinstance(maf_thr, str) and maf_thr.strip().lower() in {"", "none", "null"}:
+        return None
+    return float(maf_thr)
+
+
+def filter_variants_by_maf(
+    G: pd.DataFrame,
+    Z: pd.DataFrame,
+    variant_ids_G: List[str],
+    variant_ids_Z: List[str],
+    ref_G: pd.DataFrame,
+    maf_threshold: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], List[str], List[str]]:
+    """Subset G/Z and raw variant ID lists to columns with MAF >= threshold on ref_G."""
+    logger = get_logger()
+    shared = [c for c in G.columns if c in ref_G.columns]
+    if len(shared) < len(G.columns):
+        logger.warning(
+            f"MAF filter: reference genotypes missing {len(G.columns) - len(shared)} columns; "
+            "using intersection."
+        )
+    ref_maf = ref_G.loc[:, shared]
+    maf = variant_maf_series(ref_maf)
+    keep_cols = maf[maf >= maf_threshold].index.tolist()
+    keep_set = set(keep_cols)
+    keep_idx = [i for i, c in enumerate(G.columns) if c in keep_set]
+    G = G[keep_cols]
+    Z = Z.loc[keep_cols]
+    variant_ids_G = [variant_ids_G[i] for i in keep_idx]
+    variant_ids_Z = [variant_ids_Z[i] for i in keep_idx]
+    dropped = len(shared) - len(keep_cols)
+    logger.info(
+        f"MAF >= {maf_threshold} on training reference -> kept {len(keep_cols)} variants "
+        f"({dropped} dropped as rare/low-MAF)."
+    )
+    return G, Z, variant_ids_G, variant_ids_Z, keep_cols
+
+
+def prepare_genotypes_for_training(
+    G: pd.DataFrame,
+    Z: pd.DataFrame,
+    variant_ids_G: List[str],
+    variant_ids_Z: List[str],
+    train_sample_ids,
+    config,
+    device,
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], List[str], pd.Series]:
+    """
+    Training-path genotype prep: MAF-filter on raw train dosages, compute maf_weights,
+    then optionally column-normalize G (single matrix; no G_raw copy).
+
+    Returns maf_weights as a Series indexed by variant column name (raw-dosage MAF weights).
+    """
+    logger = get_logger()
+    train_G = G.loc[train_sample_ids]
+    maf_thr = _effective_maf_threshold(config)
+    if maf_thr is not None:
+        G, Z, variant_ids_G, variant_ids_Z, _ = filter_variants_by_maf(
+            G, Z, variant_ids_G, variant_ids_Z, train_G, maf_thr
+        )
+        train_G = train_G[G.columns]
+
+    G_maf_tensor = torch.as_tensor(train_G.values, dtype=torch.float32, device=device)
+    maf_weights = pd.Series(
+        utils.get_MAF_weights(G_maf_tensor, device, config["maf_beta"]).cpu().numpy(),
+        index=G.columns,
+    )
+    del G_maf_tensor, train_G
+
+    if config.get("normalize_G", False):
+        G = utils.normalize_G(G)
+        logger.info("Normalized G matrix (after MAF filter)")
+
+    logger.info(f"Training genotypes ready: {G.shape[0]} samples x {G.shape[1]} variants")
+    return G, Z, variant_ids_G, variant_ids_Z, maf_weights
 
 
 def load_residualized_covariates(config, device):
@@ -229,7 +327,14 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
         logger.error(f"Variants in Z but not G: {z_only}")
         raise ValueError("Genotype columns must match annotation rows")
 
-    Z = Z.loc[G.columns]  # reorder Z to match G column order
+    # Reorder Z (and raw annotation IDs) to match G column order.
+    assert len(variant_ids_G) == len(variant_ids_Z) == len(G.columns) == len(Z.index), (
+        f"variant ID list length mismatch: G={len(G.columns)}, Z={len(Z.index)}, "
+        f"ids_G={len(variant_ids_G)}, ids_Z={len(variant_ids_Z)}"
+    )
+    z_index_before = list(Z.index)
+    Z = Z.loc[G.columns]
+    variant_ids_Z = [variant_ids_Z[z_index_before.index(col)] for col in G.columns]
 
     # Feature engineering
     logger.info(f"Feature engineering for annotations...")
@@ -243,7 +348,6 @@ def load_genes(config, genotype_dir=None, annotation_dir=None):
     G, Z = utils.impute_missing(G, Z)
     logger.info(f"Loaded {G.shape[0]} individuals, {G.shape[1]} variants")
     logger.info(f"Annotation matrix: {Z.shape[1]} annotations per variant")
-
     return G, Z, variant_ids_G, variant_ids_Z
 
 
@@ -328,6 +432,10 @@ class AnnotationTensors:
     gene_indices: dict
     gene_names: list
     device: torch.device
+    num_anno: int = 0
+
+    def __post_init__(self):
+        self.num_anno = self.Z.shape[1]
 
     def get_gene_data(self, gene_name):
         start_idx, end_idx = self.gene_indices[gene_name]
@@ -437,6 +545,9 @@ class DataTensors:
         config,
         train_G_for_maf_filter=None,
         forced_variant_columns=None,
+        G_raw_for_maf=None,
+        maf_weights_precomputed=None,
+        variants_pre_filtered=False,
     ):
         """
         Create DataTensors from pandas DataFrames.
@@ -450,12 +561,25 @@ class DataTensors:
         forced_variant_columns : list, optional
             If set (e.g. from a training DataTensors run), subset to exactly these columns
             after BRR sync so train/test share the same variant set.
+        G_raw_for_maf : pd.DataFrame, optional
+            Unnormalized genotypes aligned to ``G`` (same index/columns before filtering).
+            MAF filtering and ``maf_weights`` always use this frame when provided (required
+            when ``normalize_G`` is true and variants were not pre-filtered).
+        maf_weights_precomputed : pd.Series, optional
+            Per-variant MAF weights indexed by column name (from ``prepare_genotypes_for_training``).
+        variants_pre_filtered : bool, optional
+            If True, skip MAF filtering inside ``from_pandas`` (already applied upstream).
         """
         logger = get_logger()
         assert set(X.index) == set(G.index), "Sample IDs must match between covariates and genotype files"
         assert set(G.columns) == set(Z.index), "Variant IDs must match between genotype columns and annotation index"
 
         G = G.loc[X.index]  # align sample order
+        if G_raw_for_maf is not None:
+            G_raw_for_maf = G_raw_for_maf.loc[X.index]
+            assert set(G_raw_for_maf.columns) == set(G.columns), (
+                "G_raw_for_maf columns must match G before filtering"
+            )
 
         # TODO: make this part more efficient 
 
@@ -494,29 +618,39 @@ class DataTensors:
                 )
             G = G[use_cols]
             Z = Z.loc[use_cols]
+            if G_raw_for_maf is not None:
+                G_raw_for_maf = G_raw_for_maf[use_cols]
+            if maf_weights_precomputed is not None:
+                maf_weights_precomputed = maf_weights_precomputed.loc[use_cols]
 
-        maf_thr = config.get("maf_threshold", None)
-        # Accept unset/null-like string values from CLI/YAML without crashing.
-        if maf_thr is not None and not (isinstance(maf_thr, str) and maf_thr.strip().lower() in {"", "none", "null"}):
-            thr = float(maf_thr)
-            ref = train_G_for_maf_filter if train_G_for_maf_filter is not None else G
-            shared = [c for c in G.columns if c in ref.columns]
-            if len(shared) < len(G.columns):
-                logger.warning(
-                    f"common_variants_only: reference genotypes missing {len(G.columns) - len(shared)} columns; "
-                    "using intersection for MAF."
+        G_maf = G_raw_for_maf if G_raw_for_maf is not None else G
+
+        if not variants_pre_filtered:
+            maf_thr = _effective_maf_threshold(config)
+            if maf_thr is not None:
+                ref = train_G_for_maf_filter if train_G_for_maf_filter is not None else G_maf
+                if G_raw_for_maf is not None and train_G_for_maf_filter is not None:
+                    ref = G_raw_for_maf.loc[train_G_for_maf_filter.index]
+                shared = [c for c in G.columns if c in ref.columns]
+                if len(shared) < len(G.columns):
+                    logger.warning(
+                        f"common_variants_only: reference genotypes missing {len(G.columns) - len(shared)} columns; "
+                        "using intersection for MAF."
+                    )
+                ref_maf = ref.loc[:, [c for c in shared if c in ref.columns]]
+                maf = variant_maf_series(ref_maf)
+                keep_cols = maf[maf >= maf_thr].index.tolist()
+                dropped = len(shared) - len(keep_cols)
+                G = G[keep_cols]
+                Z = Z.loc[keep_cols]
+                G_maf = G_maf[keep_cols]
+                logger.info(
+                    f"MAF >= {maf_thr} on training reference -> kept {len(keep_cols)} variants "
+                    f"({dropped} dropped as rare/low-MAF)."
                 )
-            ref_maf = ref.loc[:, [c for c in shared if c in ref.columns]]
-            maf = variant_maf_series(ref_maf)
-            keep_cols = maf[maf >= thr].index.tolist()
-            dropped = len(shared) - len(keep_cols)
-            G = G[keep_cols]
-            Z = Z.loc[keep_cols]
-            logger.info(
-                f"MAF >= {thr} on training reference -> kept {len(keep_cols)} variants "
-                f"({dropped} dropped as rare/low-MAF)."
-            )
-            
+                if maf_weights_precomputed is not None:
+                    maf_weights_precomputed = maf_weights_precomputed.loc[keep_cols]
+
         # Parse gene names and indices from column names (GENE_variantID)
         gene_indices = {}
         gene_names = []
@@ -539,16 +673,32 @@ class DataTensors:
         G_tensor = torch.as_tensor(G.values, dtype=torch.float32, device=device)
         variant_column_names = list(G.columns)
 
+        if maf_weights_precomputed is not None:
+            missing = set(G.columns) - set(maf_weights_precomputed.index)
+            if missing:
+                raise ValueError(
+                    f"maf_weights_precomputed missing {len(missing)} variant columns "
+                    f"(e.g. {next(iter(missing))})"
+                )
+            maf_weights_tensor = torch.as_tensor(
+                maf_weights_precomputed.loc[G.columns].values,
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            G_maf_tensor = torch.as_tensor(G_maf.values, dtype=torch.float32, device=device)
+            maf_weights_tensor = torch.as_tensor(
+                utils.get_MAF_weights(G_maf_tensor, device, config["maf_beta"]),
+                dtype=torch.float32,
+                device=device,
+            )
+
         return DataTensors(
             G=G_tensor,
             Z=torch.as_tensor(Z.values, dtype=torch.float32, device=device),
             X=torch.as_tensor(X.values, dtype=torch.float32, device=device),
             Y=Y,
-            maf_weights=torch.as_tensor(
-                utils.get_MAF_weights(G_tensor, device, config['maf_beta']),
-                dtype=torch.float32,
-                device=device
-            ),
+            maf_weights=maf_weights_tensor,
             brr_betas=brr_betas,
             brr_alphas=brr_alphas,
             gene_indices=gene_indices,
@@ -662,6 +812,88 @@ def _tau_vectors_from_summary_df(mean_df: pd.DataFrame):
     mask = ~ann.str.lower().eq("intercept")
     tau2 = mean_df.loc[mask, "Tau2"].to_numpy(dtype=np.float32)
     return tau1, tau2
+
+
+def resolve_joint_refit_run_ids(joint_root: str, config: dict = None) -> list:
+    """
+    Ordered joint ``run_N`` indices for per-gene refits.
+
+    Uses ``config['refits']`` when it is a list of run ids; otherwise discovers
+    ``run_*/tau_T.csv`` under ``joint_root`` (or uses integer refit count).
+    """
+    joint_root = os.path.abspath(joint_root)
+    refits = (config or {}).get("refits")
+    if isinstance(refits, list) and refits:
+        return [int(x) for x in refits]
+    run_dirs = discover_joint_run_directories(joint_root)
+    if run_dirs:
+        return [int(os.path.basename(rd).split("_")[1]) for rd in run_dirs]
+    if refits is not None:
+        try:
+            n = max(1, int(refits))
+            return list(range(1, n + 1))
+        except (TypeError, ValueError):
+            pass
+    raise FileNotFoundError(f"No joint refit runs found under {joint_root}")
+
+
+def load_tau_threshold_from_csv(csv_path: str):
+    """
+    Load τ and T from a single ``tau_T.csv`` (joint run, per-gene chr dir, etc.).
+
+    Returns
+    -------
+    mean_df, threshold, tau1, tau2
+    """
+    csv_path = os.path.abspath(csv_path)
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError(f"Missing tau/T file: {csv_path}")
+    mean_df = read_tau_T_csv(csv_path)
+    th = float(mean_df["Filter Threshold"].iloc[0])
+    tau1, tau2 = _tau_vectors_from_summary_df(mean_df)
+    return mean_df, th, tau1, tau2
+
+
+def aggregate_tau_t_from_csv_files(csv_paths: List[str]) -> pd.DataFrame:
+    """Average τ / T over multiple ``tau_T.csv`` files (same schema as joint refits)."""
+    logger = get_logger()
+    paths = [os.path.abspath(p) for p in csv_paths if os.path.isfile(p)]
+    if not paths:
+        raise FileNotFoundError("No tau_T.csv paths provided for aggregation")
+    dfs = [read_tau_T_csv(p) for p in paths]
+    logger.info("Averaging τ / T over %d file(s)", len(dfs))
+    th = float(np.mean([float(d["Filter Threshold"].iloc[0]) for d in dfs]))
+    ann = dfs[0]["Annotation"].astype(str)
+    tau1_stack = np.stack([d["Tau1"].to_numpy(dtype=np.float64) for d in dfs], axis=0)
+    tau2_stack = np.stack([d["Tau2"].to_numpy(dtype=np.float64) for d in dfs], axis=0)
+    tau1_mean = tau1_stack.mean(axis=0)
+    tau2_mean = np.nanmean(tau2_stack, axis=0)
+    return pd.DataFrame(
+        {
+            "Annotation": ann,
+            "Tau1": tau1_mean,
+            "Tau2": tau2_mean,
+            "Filter Threshold": th,
+        }
+    )
+
+
+def load_tau_threshold_from_joint_run(joint_root: str, run_id: int):
+    """
+    Load τ and T from one joint refit ``run_{run_id}/tau_T.csv``.
+
+    Returns
+    -------
+    mean_df, threshold, tau1, tau2  (same as ``load_tau_threshold``)
+    """
+    joint_root = os.path.abspath(joint_root)
+    path = os.path.join(joint_root, f"run_{int(run_id)}", "tau_T.csv")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Missing joint tau/T file: {path}")
+    mean_df = read_tau_T_csv(path)
+    th = float(mean_df["Filter Threshold"].iloc[0])
+    tau1, tau2 = _tau_vectors_from_summary_df(mean_df)
+    return mean_df, th, tau1, tau2
 
 
 def load_tau_threshold(config):

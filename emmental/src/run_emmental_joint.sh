@@ -3,8 +3,8 @@
 #SBATCH --job-name=emmental-joint
 #SBATCH --output=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.out
 #SBATCH --error=/gpfs/commons/home/vmazeeva/bash_outputs/slurm_%j.err
-#SBATCH --time=10:00:00
-#SBATCH --mem=200G  
+#SBATCH --time=36:00:00
+#SBATCH --mem=100G
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=cpu
 
@@ -21,10 +21,16 @@ set -- "${SCRIPT_ARGS[@]}"
 
 cd /gpfs/commons/home/vmazeeva/firvTWAS/emmental/src
 
+# Model variants (use a distinct --joint_output_dir per run; flags are saved in config.yaml):
+#   baseline:     --no_wg false --no_rhog false 
+#   no_wg:        --no_wg true  --no_rhog false 
+#   no_rhog:      --no_wg false --no_rhog true 
+#   no_wg+no_rhog: --no_wg true  --no_rhog true 
+
 # Default values
 joint_output_dir=output/joint
 config_file=config_base.yaml
-gene_list=genes/genes_list_seed.txt
+gene_list=genes/top200_BRR_genes.txt
 expression_path=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv
 annotation_dir=/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled/
 brr_results_dir=/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge
@@ -38,12 +44,17 @@ tau1_normal_prior=False
 annotations=()
 threshold_prior_alpha=2.0
 threshold_prior_beta=20.0
+threshold_init=""
+threshold_init_quantile=""
 maf_beta=1
 maf_threshold=""
-lin2_clip=""
-gate_mode="hard_abs"
-gate_sharpness="20.0"
-
+no_wg="false"
+no_rhog="false"
+normalize_G="false"
+collapsed_model="false"
+no_T="false"
+init_wg_zero="false"
+wg_rhog_delta_guide="false"
 
 # Parse command line arguments with long-form options
 while [[ $# -gt 0 ]]; do
@@ -88,16 +99,8 @@ while [[ $# -gt 0 ]]; do
             epochs="$2"
             shift 2
             ;;
-        --lin2_clip|--lin2-clip)
-            lin2_clip="$2"
-            shift 2
-            ;;
-        --gate_mode|--gate-mode)
-            gate_mode="$2"
-            shift 2
-            ;;
-        --gate_sharpness|--gate-sharpness)
-            gate_sharpness="$2"
+        --no_wg|--no-wg)
+            no_wg="$2"
             shift 2
             ;;
         --log_level|--log-level)
@@ -108,8 +111,28 @@ while [[ $# -gt 0 ]]; do
             clip_norm="$2"
             shift 2
             ;;
-        --refits|--refits-number)   
-            refits="$2"
+        --no_rhog|--no-rhog)
+            no_rhog="$2"
+            shift 2
+            ;;
+        --normalize_G|--normalize-G)
+            normalize_G="$2"
+            shift 2
+            ;;
+        --collapsed_model|--collapsed-model)
+            collapsed_model="$2"
+            shift 2
+            ;;
+        --no_T|--no-T)
+            no_T="$2"
+            shift 2
+            ;;
+        --init_wg_zero|--init-wg-zero)
+            init_wg_zero="$2"
+            shift 2
+            ;;
+        --wg_rhog_delta_guide|--wg-rhog-delta-guide)
+            wg_rhog_delta_guide="$2"
             shift 2
             ;;
         --tau1_normal_prior|--tau1-normal-prior)
@@ -130,6 +153,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --threshold_prior_beta|--threshold-prior-beta)
             threshold_prior_beta="$2"
+            shift 2
+            ;;
+        --threshold_init|--threshold-init)
+            threshold_init="$2"
+            shift 2
+            ;;
+        --threshold_init_quantile|--threshold-init-quantile)
+            threshold_init_quantile="$2"
             shift 2
             ;;
         --maf_beta|--maf-beta)
@@ -153,14 +184,19 @@ while [[ $# -gt 0 ]]; do
             echo "  --train_test, --train-test BOOL         Enable train/test split (default: False)"
             echo "  --lr, --learning_rate FLOAT              Learning rate (default: 0.1)"
             echo "  --epochs, --epoch INT                    Number of epochs (default: 500)"
-            echo "  --lin2_clip, --lin2-clip FLOAT          Clip lin2 before exp (default: None)"
-            echo "  --gate_mode, --gate-mode STR            Gate mode: hard_abs or smooth_abs (default: hard_abs)"
-            echo "  --gate_sharpness, --gate-sharpness FLOAT  Sharpness for smooth_abs gate (default: 20.0)"
+            echo "  --no_wg, --no-wg BOOL                     Fix w_g=1 (do not sample w_g)"
+            echo "  --no_rhog, --no-rhog BOOL                 Fix rho_g=0; mu=w*lambda, sigma=|w*lambda|"
+            echo "  --init_wg_zero, --init-wg-zero BOOL       Initialize w_g guide loc to 0 (default: false)"
+            echo "  --wg_rhog_delta_guide BOOL                AutoDelta guide for w_g/rho_g (default: false)"
+            echo "  --normalize_G, --normalize-G BOOL        Normalize G matrix (default: False)"
+            echo "  --no_T, --no-T BOOL                      Disable annotation gate threshold (T=0; all |Z·tau1| pass)"
             echo "  --refits, --refits-number INT           Number of refits (default: 10)"
             echo "  --clip_norm, --clip-norm FLOAT          Clip gradient norm (default: 10.0)"
             echo "  --annotations, --annotations-list LIST    List of annotations to use (default: None)"
             echo "  --threshold_prior_alpha, --threshold-prior-alpha FLOAT   Alpha for threshold Beta prior (default: 2.0)"
             echo "  --threshold_prior_beta, --threshold-prior-beta FLOAT     Beta for threshold Beta prior (default: 20.0)"
+            echo "  --threshold_init STR                     prior_mean | prior_mode | data_quantile (default: prior_mean)"
+            echo "  --threshold_init_quantile FLOAT          Quantile for data_quantile init (default: 0.25)"
             echo "  --maf_beta, --maf-beta FLOAT              Beta parameter for MAF weights (default: 1)"
             echo "  --maf_threshold, --maf-threshold FLOAT   MAF cutoff when maf_threshold is not None (default: None)"
             echo "  --log_level, --log-level LEVEL           Logging level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
@@ -191,11 +227,32 @@ if [ -n "$maf_threshold" ] && [ "$maf_threshold" != "None" ] && [ "$maf_threshol
   maf_args=(--maf_threshold "$maf_threshold")
 fi
 
-lin2_clip_args=()
-if [ -n "$lin2_clip" ] && [ "$lin2_clip" != "None" ] && [ "$lin2_clip" != "null" ]; then
-  lin2_clip_args=(--lin2_clip "$lin2_clip")
+threshold_init_args=()
+if [ -n "$threshold_init" ]; then
+  threshold_init_args=(--threshold_init "$threshold_init")
+fi
+threshold_quantile_args=()
+if [ -n "$threshold_init_quantile" ]; then
+  threshold_quantile_args=(--threshold_init_quantile "$threshold_init_quantile")
 fi
 
+mkdir -p "$joint_output_dir"
+
+move_slurm_logs() {
+    if [ -z "$joint_output_dir" ] || [ -z "${SLURM_JOB_ID:-}" ]; then
+        return
+    fi
+    for slurm_file in "slurm_${SLURM_JOB_ID}.out" \
+                        "slurm_${SLURM_JOB_ID}.err" \
+                        "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.out" \
+                        "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.err"; do
+        if [ -f "$slurm_file" ]; then
+            mv "$slurm_file" "${joint_output_dir}/$(basename "$slurm_file")"
+            echo "Moved $slurm_file to ${joint_output_dir}/"
+        fi
+    done
+}
+trap move_slurm_logs EXIT
 
 python -u emmental_joint.py --config $config_file \
                          --gene_list $gene_list \
@@ -210,29 +267,16 @@ python -u emmental_joint.py --config $config_file \
                          --brr_results_dir $brr_results_dir \
                          --refits $refits \
                          --tau1_normal_prior $tau1_normal_prior \
-                         "${annotations_args[@]}" \
+                         --no_rhog $no_rhog \
+                        "${annotations_args[@]}" \
                          --threshold_prior_alpha $threshold_prior_alpha \
                          --threshold_prior_beta $threshold_prior_beta \
-                         --gate_mode $gate_mode \
-                         --gate_sharpness $gate_sharpness \
-                         --maf_beta $maf_beta \
+                         "${threshold_init_args[@]}" \
+                         "${threshold_quantile_args[@]}" \
+                         --no_wg $no_wg \
                          "${maf_args[@]}" \
-                         "${lin2_clip_args[@]}" \
-
-# Move SLURM output files to the run output directory if it exists
-if [ -n "$joint_output_dir" ]; then
-    # Get the current SLURM job ID
-    if [ -n "$SLURM_JOB_ID" ]; then
-        # Find and move .out and .err files (they might be in bash_outputs/seed_genes/ or current directory)
-        # Check common locations for SLURM output files
-        for slurm_file in "slurm_${SLURM_JOB_ID}.out" \
-                            "slurm_${SLURM_JOB_ID}.err" \
-                            "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.out" \
-                            "/gpfs/commons/home/vmazeeva/bash_outputs/slurm_${SLURM_JOB_ID}.err"; do
-            if [ -f "$slurm_file" ]; then
-                mv "$slurm_file" "${joint_output_dir}/$(basename "$slurm_file")"
-                echo "Moved $slurm_file to ${joint_output_dir}/"
-            fi
-        done
-    fi
-fi
+                         --normalize_G $normalize_G \
+                         --collapsed_model $collapsed_model \
+                         --no_T $no_T \
+                         --init_wg_zero $init_wg_zero \
+                         --wg_rhog_delta_guide $wg_rhog_delta_guide \

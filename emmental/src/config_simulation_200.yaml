@@ -1,0 +1,39 @@
+# Parameter recovery with 200 genes (matches train_common01 joint panel).
+# Used with: python param_recovery.py --config config_simulation_200.yaml --output_dir ...
+
+expression_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv'
+covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/covariates.tsv'
+
+genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled/'
+gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/src/genes/top200_BRR_genes.txt'
+
+brr_results_dir: null
+
+train_test: true
+
+maf_beta: 1
+maf_threshold: 0.01
+tau1_normal_prior: false
+threshold_prior_alpha: 2.0
+threshold_prior_beta: 20.0
+threshold_normal_guide: true
+threshold_init: prior_mean
+threshold_init_quantile: 0.25
+no_wg: false
+no_rhog: false
+normalize_G: false
+annotations: ['chrombpnet', 'dist_to_TSS', 'ABC', 'CADD_raw', 'Eigen-raw', 'enformer', 'lof', 'missense', 'splice', 'MAP20', 'alphamissense', 'gnomAD_genomes_POPMAX_AF']
+
+lr: 0.01
+epochs: 500
+n_posterior: 100
+clip_norm: 10.0
+refits: 1
+
+simulation_obs_std: 0.5
+simulation_add_obs_noise: true
+
+collapsed_model: false
+
+log_level: INFO

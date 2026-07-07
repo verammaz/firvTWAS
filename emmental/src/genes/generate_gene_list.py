@@ -48,11 +48,11 @@ if __name__ == "__main__":
     total_genes = N_GENES + len(seed_genes)
 
     # write gene_list to file
-    # with open(f"{total_genes}genes_list_seed_random_full_.txt", "w") as f:
-    #     for gene in gene_list_full:
-    #         f.write(gene + "\n")
-    #     for gene in seed_genes:
-    #         f.write(gene + "\n")
+    with open(f"{total_genes}genes_list_seed_random_full.txt", "w") as f:
+        for gene in gene_list_full:
+            f.write(gene + "\n")
+        for gene in seed_genes:
+            f.write(gene + "\n")
 
     # with open(f"{total_genes}genes_list_seed_random_log1p.txt", "w") as f:
     #     for gene in gene_list_log1p:

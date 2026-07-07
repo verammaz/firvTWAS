@@ -59,6 +59,9 @@ def minmax_scale(df):
 def z_scale(df):
     return (df - df.mean()) / df.std()
 
+def normalize_G(G):
+    return (G - G.mean(axis=0)) / G.std(axis=0)
+
 def impute_missing(G, Z):
     """
     Impute missing values in genotype and annotation matrices.
@@ -187,7 +190,23 @@ def load_yaml(yaml_path):
     return config
 
 
-def fill_defaults(args, yaml_config=None):
+# Keys only used by simulate_expression / param_recovery — omit from saved train configs.
+SIMULATION_CONFIG_KEYS = frozenset({"simulation_obs_std", "simulation_add_obs_noise"})
+
+
+def config_for_yaml_save(config: dict) -> dict:
+    """Drop simulation-only keys before writing joint/pergene config.yaml."""
+    return {k: v for k, v in config.items() if k not in SIMULATION_CONFIG_KEYS}
+
+
+def strip_simulation_config(config: dict) -> dict:
+    """Remove simulation-only keys (in place). Used for real-data train configs."""
+    for key in SIMULATION_CONFIG_KEYS:
+        config.pop(key, None)
+    return config
+
+
+def fill_defaults(args, yaml_config=None, *, keep_simulation_config: bool = False):
     """
     Fill in missing configuration values with defaults or override with YAML config.
     Supports both joint and per-gene modes.
@@ -198,6 +217,7 @@ def fill_defaults(args, yaml_config=None):
         'n_posterior': 50,
         'lr': 0.01,
         'joint_output_dir': 'emmental_outputs/joint',
+        'gene_list': None,
         'pergene_output_dir': 'emmental_outputs/pergene', # not used in joint mode
         'maf_beta': 1,
         'brr_results_dir': None,
@@ -206,11 +226,27 @@ def fill_defaults(args, yaml_config=None):
         'log_level': 'INFO',
         'log_file': None,
         'refits': 10,
+        'refit': False,
         'tau1_normal_prior': False,
-        'T_prior_alpha': 2.0,
-        'T_prior_beta': 20.0,
+        'threshold_prior_alpha': 2.0,
+        'threshold_prior_beta': 20.0,
+        'threshold_normal_guide': True,
+        'threshold_init': 'prior_mean',
+        'threshold_init_quantile': 0.25,
+        'no_T': False,
         'annotations': [],
-        'maf_threshold': None
+        'maf_threshold': None,
+        'no_wg': False,
+        'no_rhog': False,
+        'init_wg_zero': False,
+        'wg_rhog_delta_guide': False,
+        'clip_norm': 10.0,
+        'normalize_G': False,
+        'collapsed_model': False,
+        'early_stop': None,
+        'early_stop_min_epochs': 50,
+        'early_stop_patience': 30,
+        'early_stop_rel_tol': 1e-3,
     }
 
     if yaml_config:
@@ -219,6 +255,10 @@ def fill_defaults(args, yaml_config=None):
         arg_val = getattr(args, key, None)
         if arg_val is not None:
             defaults[key] = arg_val
+
+    if not keep_simulation_config:
+        strip_simulation_config(defaults)
+
     return defaults
 
 
@@ -257,7 +297,12 @@ def parse_args():
     parser.add_argument('--n_posterior', type=int, help="Number of posterior samples")
     parser.add_argument('--epochs', type=int, help="Number of epochs to train")
     parser.add_argument('--lr', type=float, help="Learning rate")
-    parser.add_argument('--refits', type=int, help="Number of refits")
+    parser.add_argument('--refits', type=int, help="Number of refits (joint mode)")
+    parser.add_argument(
+        '--refit',
+        type=str_to_bool,
+        help="Per-gene: multiple refits matched to joint run_* (tau/T per run). Default: single fit with averaged joint tau/T.",
+    )
     parser.add_argument('--clip_norm', type=float, help="Clip norm of weights (default: 10.0)")
     # Model parameters
     parser.add_argument('--maf_beta', type=int, help="Beta parameter for MAF weights")
@@ -265,8 +310,67 @@ def parse_args():
     parser.add_argument('--annotations', type=str, nargs='+', help="List of annotations to use") 
     parser.add_argument('--threshold_prior_alpha', type=float, help="Alpha for threshold Beta prior")
     parser.add_argument('--threshold_prior_beta', type=float, help="Beta for threshold Beta prior")
+    parser.add_argument(
+        '--threshold_normal_guide',
+        type=str_to_bool,
+        help="Use AutoNormal guide for threshold (default True; False uses AutoDelta)",
+    )
+    parser.add_argument(
+        '--threshold_init',
+        type=str,
+        choices=['prior_mean', 'prior_mode', 'data_quantile'],
+        help="Initial threshold T for SVI guide",
+    )
+    parser.add_argument(
+        '--threshold_init_quantile',
+        type=float,
+        help="Quantile of |Z·tau1| for data_quantile threshold init (default 0.25)",
+    )
     parser.add_argument('--maf_threshold', type=float, help="MAF threshold for common variants")
-   
+    parser.add_argument(
+        '--no_T',
+        type=str_to_bool,
+        help="Disable annotation gate threshold (T=0, all |Z·tau1| pass)",
+    )
+    parser.add_argument('--no_wg', type=str_to_bool, help="Remove w_g parameter from model")
+    parser.add_argument('--no_rhog', type=str_to_bool, help="Remove rho_g parameter from model")
+    parser.add_argument(
+        '--init_wg_zero',
+        type=str_to_bool,
+        help="Initialize w_g guide loc to 0 instead of 1 (default: false)",
+    )
+    parser.add_argument(
+        '--wg_rhog_delta_guide',
+        type=str_to_bool,
+        help="Use AutoDelta (MAP) guide for w_g and rho_g instead of AutoDiagonalNormal",
+    )
+
+    parser.add_argument('--normalize_G', type=str_to_bool, help="Normalize G matrix")
+    parser.add_argument(
+        '--collapsed_model',
+        type=str_to_bool,
+        help="Integrate out beta per gene (collapsed likelihood via pyro.factor)",
+    )
+    parser.add_argument(
+        '--early_stop',
+        type=str_to_bool,
+        help="Stop SVI when loss plateaus (default: on for collapsed per-gene, off otherwise)",
+    )
+    parser.add_argument(
+        '--early_stop_min_epochs',
+        type=int,
+        help="Minimum epochs before early stopping can trigger (default: 50)",
+    )
+    parser.add_argument(
+        '--early_stop_patience',
+        type=int,
+        help="Epochs without relative loss improvement before stopping (default: 30)",
+    )
+    parser.add_argument(
+        '--early_stop_rel_tol',
+        type=float,
+        help="Relative loss improvement threshold to reset patience (default: 1e-3)",
+    )
     # Per-gene specific flags
     parser.add_argument('--chromosome', type=str, help="Chromosome of focus (per-gene analysis only)")
     # Joint mode flags

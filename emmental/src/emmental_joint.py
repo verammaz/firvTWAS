@@ -2,7 +2,7 @@ import torch
 import pyro
 import yaml
 from pyro import poutine
-from pyro.infer.autoguide import AutoDiagonalNormal, AutoGuideList, AutoDelta
+from pyro.infer.autoguide import AutoDiagonalNormal
 from pyro.infer import SVI, Trace_ELBO, Predictive
 try:
     from pyro.optim import ClippedAdam
@@ -15,14 +15,16 @@ from sklearn.metrics import r2_score
 import numpy as np
 import os
 import pandas as pd
+from typing import List
 
 import utils
 import load_data
-from save_outputs import save_results
+from save_outputs import save_results, build_posterior_stats, wg_rhog_delta_sites
 from models import (
     EmmentalJoint,
     annotation_lambda,
 )
+from joint_guide_setup import resolve_threshold_init, setup_joint_guide
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ def make_init_loc_fn(data, config, eps=1e-3):
     """
     Build an init_loc_fn(site) that warm-starts from BRR betas.
 
-    - For w_g: start at 1.
+    - For w_g: start at 1 (or 0 if config init_wg_zero).
     - For rho_g: start at 0.5.
     - For Z_{gene}: back out an initial Z_norm from BRR betas and approx lambda_.
     - Everything else: default to zeros.
@@ -161,10 +163,8 @@ def make_init_loc_fn(data, config, eps=1e-3):
     else:
         tau1_init = torch.ones(num_anno + 1, device=device) / (num_anno + 1) # uniform over annotations
     
-    # threshold initialized to mean of Beta(2,20) prior
-    threshold_alpha = config.get("threshold_prior_alpha", 2.0)
-    threshold_beta = config.get("threshold_prior_beta", 20.0)
-    threshold_init = torch.tensor(threshold_alpha / (threshold_alpha + threshold_beta), device=device)
+    # threshold for BRR warm-start λ approximation (prior mean or configured init)
+    threshold_init = torch.tensor(resolve_threshold_init(data, config), device=device)
 
     def _get_brr_beta_vector(gene_name):
         """
@@ -212,7 +212,8 @@ def make_init_loc_fn(data, config, eps=1e-3):
 
         # Global gene weights
         if name == "w_g":
-            return torch.ones(data.num_genes, device=device)
+            wg_init = 0.0 if config.get("init_wg_zero", False) else 1.0
+            return torch.full((data.num_genes,), wg_init, device=device)
 
         # Mixing parameter over mean vs variance component
         if name == "rho_g":
@@ -256,69 +257,59 @@ def make_init_loc_fn(data, config, eps=1e-3):
 
     return init_loc_fn
 
-def setup_model(data_train, config):
+def setup_model(data_train, config, simulated_parameters=None):
     logger = utils.get_logger()
-    to_optimize = []
-    model = EmmentalJoint()
-    to_optimize.append('tau1')
-    to_optimize.append('tau2')    
-    to_optimize.append("threshold")
-
-    guide = AutoGuideList(model)
-
-    # ------------------------------------------------------------------
-    # Decide whether there are any non-(tau/threshold) latents to put
-    # under AutoDiagonalNormal. 
-    # ------------------------------------------------------------------
-    blocked_model = poutine.block(model, hide=to_optimize)
-    trace = poutine.trace(blocked_model).get_trace(data_train, config)
-    has_latents = any(
-        (site["type"] == "sample") and (not site.get("is_observed", False))
-        for site in trace.nodes.values()
+    model = EmmentalJoint(simulated_parameters=simulated_parameters)
+    guide, svi = setup_joint_guide(
+        model,
+        data_train,
+        config,
+        init_loc_fn=make_init_loc_fn(data_train, config)
+        if data_train.brr_betas is not None
+        else None,
     )
-
-    # Decide whether to use BRR-based warm start (requires BRR betas)
-    use_brr_init = (data_train.brr_betas is not None)
-
-    if has_latents:
-        if use_brr_init:
-            init_loc_fn = make_init_loc_fn(data_train, config)
-            guide.add(AutoDiagonalNormal(blocked_model, init_loc_fn=init_loc_fn))
-        else:
-            guide.add(AutoDiagonalNormal(blocked_model))
-    else:
-        logger.warning(
-            "No latent variables found for AutoDiagonalNormal (after hiding tau/threshold); "
-            "using AutoDelta-only guide for tau/threshold."
-        )
-
-    # Always put tau/threshold (if present) under AutoDelta.
-    guide.add(AutoDelta(poutine.block(model, expose=to_optimize)))
-
-    clip_norm = config.get('clip_norm', 10.0)
+    clip_norm = config.get("clip_norm", 10.0)
     if HAS_CLIPPED_ADAM:
-        adam = ClippedAdam({"lr": config['lr'], "clip_norm": clip_norm})
         logger.info(f"Using ClippedAdam with clip_norm={clip_norm}")
     else:
         logger.warning("ClippedAdam not available, using regular Adam.")
-        adam = pyro.optim.Adam({"lr": config['lr']})
+    return model, guide, svi
 
-    svi = SVI(model, guide=guide, optim=adam, loss=Trace_ELBO())
-
-    return model, guide,svi
-
-def fit_emmental(data_train, config):
+def fit_emmental(data_train, config, simulated_parameters=None):
     """
     Fit emmental_expression (joint) model using SVI.
 
     INPUT:
         - data_train: DataTensors for training
         - config: configuration dictionary
+        - simulated_parameters: optional ground-truth dict from simulate_expression
     OUTPUT:
         - losses, times, posterior_stats, beta_samples, mu_samples, tau_history
     """
     logger = utils.get_logger()
-    model, guide, svi = setup_model(data_train, config)
+    if config.get("collapsed_model", False):
+        from emmental_collapsed_fit import fit_joint_collapsed
+
+        logger.info("Using collapsed joint model (beta integrated out).")
+        init_loc_fn = None
+        if simulated_parameters is None and data_train.brr_betas is not None:
+            init_loc_fn = make_init_loc_fn(data_train, config)
+
+        def _tau_hist(epoch):
+            return (
+                _extract_tau_history_step(epoch, "tau1"),
+                _extract_tau_history_step(epoch, "tau2"),
+            )
+
+        return fit_joint_collapsed(
+            data_train,
+            config,
+            init_loc_fn=init_loc_fn,
+            tau_history_fn=_tau_hist,
+            simulated_parameters=simulated_parameters,
+        )
+
+    model, guide, svi = setup_model(data_train, config, simulated_parameters=simulated_parameters)
     
     pyro.clear_param_store()
 
@@ -353,10 +344,9 @@ def fit_emmental(data_train, config):
     with torch.no_grad():
         samples = predictive(data_train, config)
 
-    posterior_stats = {
-        k: {'mean': v.mean(0).cpu().numpy(), 'std': v.std(0).cpu().numpy()}
-        for k, v in samples.items()
-    }
+    posterior_stats = build_posterior_stats(
+        samples, delta_sites=wg_rhog_delta_sites(config)
+    )
     beta_samples = _extract_samples(samples, data_train, "beta")
     mu_samples = _extract_samples(samples, data_train, "mu")
     sigma_samples = _extract_samples(samples, data_train, "sigma")
@@ -369,6 +359,19 @@ def fit_emmental(data_train, config):
 # Main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Joint config I/O
+# ---------------------------------------------------------------------------
+
+def write_joint_config(output_dir: str, config: dict, completed_runs: List[int]) -> None:
+    """Write config.yaml under joint root (updated after each refit)."""
+    cfg = utils.config_for_yaml_save(dict(config))
+    cfg["refits"] = [int(x) for x in completed_runs]
+    path = os.path.join(output_dir, "config.yaml")
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+
+
 def main():
     args = utils.parse_args()
     yaml_config = None
@@ -376,8 +379,10 @@ def main():
         yaml_config = utils.load_yaml(args.config)
     config = utils.fill_defaults(args, yaml_config)
 
+    # drop pergene mode params
     config.pop('chromosome', None)
     config.pop('pergene_output_dir', None)
+    config.pop('refit', None)
 
     log_level = config.get('log_level', 'INFO')
     log_file = config.get('log_file', None)
@@ -388,6 +393,23 @@ def main():
     logger.info("=" * 50)
     for key, value in config.items():
         logger.info(f"  {key}: {value}")
+
+    model_bits = []
+    if config.get("no_wg"):
+        model_bits.append("w_g=1 (fixed)")
+    if config.get("no_rhog"):
+        model_bits.append("rho_g=0, mu=w*lambda")
+    if not model_bits:
+        model_bits.append("full (sample w_g, rho_g)")
+    if config.get("collapsed_model", False):
+        model_bits.append("collapsed likelihood (no Z_gene)")
+    if config.get("no_T"):
+        model_bits.append("T=0 (all variants pass gate)")
+    if config.get("init_wg_zero", False):
+        model_bits.append("w_g init=0")
+    if config.get("wg_rhog_delta_guide", False):
+        model_bits.append("w_g/rho_g guide=AutoDelta (MAP)")
+    logger.info("Model variant: %s", ", ".join(model_bits))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -439,11 +461,15 @@ def main():
         Y_train = {gene: expr[train_idx] for gene, expr in Y.items()}
         Y_test = {gene: expr[test_idx] for gene, expr in Y.items()}
 
+        G, Z, variant_ids_G, variant_ids_Z, maf_weights = (
+            load_data.prepare_genotypes_for_training(
+                G, Z, variant_ids_G, variant_ids_Z, train_sample_ids, config, device
+            )
+        )
+
         G_train = G.loc[train_sample_ids]
         G_test = G.loc[test_sample_ids]
 
-        # Train tensors first so MAF-based common-variant filtering (if enabled) defines
-        # variant_column_names; test must reuse the same columns.
         logger.info("Creating train data tensors...")
         data_train = load_data.DataTensors.from_pandas(
             G_train,
@@ -454,7 +480,8 @@ def main():
             brr_alphas,
             device,
             config,
-            train_G_for_maf_filter=G_train,
+            maf_weights_precomputed=maf_weights,
+            variants_pre_filtered=True,
         )
         logger.info("Creating test data tensors...")
         data_test = load_data.DataTensors.from_pandas(
@@ -466,12 +493,19 @@ def main():
             brr_alphas,
             device,
             config,
-            train_G_for_maf_filter=G_train,
             forced_variant_columns=data_train.variant_column_names,
+            maf_weights_precomputed=maf_weights,
+            variants_pre_filtered=True,
         )
     else:
         data_test = None
-        X_train, Y_train, G_train = X, Y, G
+        X_train, Y_train = X, Y
+        G, Z, variant_ids_G, variant_ids_Z, maf_weights = (
+            load_data.prepare_genotypes_for_training(
+                G, Z, variant_ids_G, variant_ids_Z, G.index, config, device
+            )
+        )
+        G_train = G
         logger.info("Creating train data tensors...")
         data_train = load_data.DataTensors.from_pandas(
             G_train,
@@ -482,7 +516,8 @@ def main():
             brr_alphas,
             device,
             config,
-            train_G_for_maf_filter=G_train,
+            maf_weights_precomputed=maf_weights,
+            variants_pre_filtered=True,
         )
 
     logger.info(f"\nData summary:")
@@ -508,11 +543,19 @@ def main():
         'covariates': data_train.num_cov,
     }
     
-    # all runs share config, save config to joint_output_dir
+    # all runs share config; write config early and after each refit
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    runs = []
+    n_refits_planned = int(config["refits"])
+    config["n_refits_planned"] = n_refits_planned
+    runs: List[int] = []
+    write_joint_config(OUTPUT_DIR, config, runs)
+    logger.info(
+        "Wrote initial config to %s (n_refits_planned=%d)",
+        os.path.join(OUTPUT_DIR, "config.yaml"),
+        n_refits_planned,
+    )
     refit_summaries = []
-    for run in range(config['refits']): # each run in child folder
+    for run in range(n_refits_planned):  # each run in child folder
         print("\nREFIT #",run+1)
         # Fit
         losses, times, posterior_stats, beta_samples, mu_samples, sigma_samples, tau_history = fit_emmental(data_train, config)
@@ -565,6 +608,13 @@ def main():
                 gene_indices=data_train.gene_indices,
         )
         logger.info(f"Results saved to {output_dir}")
+        write_joint_config(OUTPUT_DIR, config, runs)
+        logger.info(
+            "Updated config (%d/%d refits): %s",
+            len(runs),
+            n_refits_planned,
+            os.path.join(OUTPUT_DIR, "config.yaml"),
+        )
 
     if refit_summaries:
         logger.info("\nRefit summary diagnostics:")
@@ -584,13 +634,9 @@ def main():
             )
 
     logger.info("\nDone with all refits!")
+    write_joint_config(OUTPUT_DIR, config, runs)
+    logger.info(f"Final config saved to {os.path.join(OUTPUT_DIR, 'config.yaml')}")
 
-    # save config to output_dir
-    config['refits'] = runs
-    with open(os.path.join(OUTPUT_DIR, 'config.yaml'), 'w') as f:
-        yaml.dump(config, f)
-    logger.info(f"Config saved to {os.path.join(OUTPUT_DIR, 'config.yaml')}")
 
-    
 if __name__ == '__main__':
     main()

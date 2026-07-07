@@ -6,8 +6,8 @@ covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/c
 
 # Genotype and annotation data (Option 2: Individual gene files)
 genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
-annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_raw/'
-gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/genes/genes_list_seed.txt'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled/'
+gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/genes/top200_BRR_genes.txt'
 
 # Bayesian Ridge Regression results
 brr_results_dir: "/gpfs/commons/home/adas/uTWAS/src/results/baseline_full/bayesian_ridge"
@@ -20,14 +20,12 @@ maf_beta: 1  # Beta parameter for MAF weights
 lr: 0.01   # Learning rate
 epochs: 500  # Number of training epochs
 n_posterior: 50  # Number of posterior samples
-refits: 1
-lin2_clip: null  # Optional clamp for lin2 before exp (e.g. 8.0 or 10.0 to stabilize)
+refits: 10
 maf_threshold: null
 annotations: ['chrombpnet', 'dist_to_TSS', 'ABC', 'CADD_raw', 'Eigen-raw', 'enformer', 'lof', 'missense', 'splice', 'MAP20', 'alphamissense', 'gnomAD_genomes_POPMAX_AF']
 
 # Output
 joint_output_dir: 'output/joint'
-# per-chromosome subdirectory created automatically in pergene output directory
 pergene_output_dir: 'output/pergene'
 
 # Per-gene 

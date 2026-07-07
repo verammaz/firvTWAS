@@ -1,0 +1,46 @@
+# Parameter recovery: simulate from Emmental prior, refit joint model, compare to truth.
+# Used with: python param_recovery.py --config config_simulation.yaml --output_dir ...
+
+# Phenotype data (needed for sample IDs / train split; expression is replaced by simulation)
+expression_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/tpm_genes_subset.tsv'
+covariates_path: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/covariates.tsv'
+
+# Genotype and annotation structure (real G, Z — only y is simulated)
+genotype_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/genotypes/'
+annotation_dir: '/gpfs/commons/groups/knowles_lab/vmazeeva/BigBrain/Processed/annotations_scaled/'
+gene_list: '/gpfs/commons/home/vmazeeva/firvTWAS/emmental/src/genes/gene_list_3.txt'
+
+# No BRR warm start during recovery
+brr_results_dir: null
+
+train_test: true
+
+# Model parameters
+maf_beta: 1
+maf_threshold: null
+tau1_normal_prior: false
+threshold_prior_alpha: 2.0
+threshold_prior_beta: 20.0
+threshold_normal_guide: true
+threshold_init: prior_mean   # prior_mean | prior_mode | data_quantile
+threshold_init_quantile: 0.25
+no_wg: false
+no_rhog: false
+normalize_G: false
+annotations: ['chrombpnet', 'dist_to_TSS', 'ABC', 'CADD_raw', 'Eigen-raw', 'enformer', 'lof', 'missense', 'splice', 'MAP20', 'alphamissense', 'gnomAD_genomes_POPMAX_AF']
+
+# Training (joint refit after simulation)
+lr: 0.01
+epochs: 500
+n_posterior: 100
+clip_norm: 10.0
+refits: 1
+
+# Simulation settings (see models.simulate_expression)
+simulation_obs_std: 0.5
+simulation_add_obs_noise: true
+
+# Not used by param_recovery.py (it sets collapsed_model per run)
+collapsed_model: false
+
+log_level: INFO
